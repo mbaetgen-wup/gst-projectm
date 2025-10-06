@@ -1,0 +1,200 @@
+
+/*
+ * Basic gst/projectM integration structs and functions that can be re-used for
+ * alternative plugin implementations.
+ */
+
+#ifndef __GST_PROJECTM_BASE_H__
+#define __GST_PROJECTM_BASE_H__
+
+#include <gst/gl/gstglmemory.h>
+#include <gst/gst.h>
+#include <projectM-4/playlist.h>
+#include <projectM-4/projectM.h>
+
+G_BEGIN_DECLS
+
+/**
+ * projectM config properties.
+ */
+struct _GstBaseProjectMSettings {
+
+  gchar *preset_path;
+  gchar *texture_dir_path;
+
+  gfloat beat_sensitivity;
+  gdouble hard_cut_duration;
+  gboolean hard_cut_enabled;
+  gfloat hard_cut_sensitivity;
+  gdouble soft_cut_duration;
+  gdouble preset_duration;
+  gulong mesh_width;
+  gulong mesh_height;
+  gboolean aspect_correction;
+  gfloat easter_egg;
+  gboolean preset_locked;
+  gboolean enable_playlist;
+  gboolean shuffle_presets;
+  gint min_fps_n;
+  gint min_fps_d;
+};
+
+/**
+ * Variables needed for managing projectM.
+ */
+struct _GstBaseProjectMPrivate {
+  projectm_handle handle;
+  projectm_playlist_handle playlist;
+  GMutex projectm_lock;
+
+  GstClockTime first_frame_time;
+  gboolean first_frame_received;
+};
+
+/**
+ * projectM init result return arguments.
+ */
+struct _GstBaseProjectMInitResult {
+  projectm_handle ret_handle;
+  projectm_playlist_handle ret_playlist;
+  gboolean success;
+};
+
+typedef struct _GstBaseProjectMPrivate GstBaseProjectMPrivate;
+typedef struct _GstBaseProjectMSettings GstBaseProjectMSettings;
+typedef struct _GstBaseProjectMInitResult GstBaseProjectMInitResult;
+
+/**
+ * One time initialization. Should be called once before any other function in
+ * this unit.
+ */
+void gst_projectm_base_init_once();
+
+/**
+ * get_property delegate for projectM setting structs.
+ *
+ * @param object Plugin gst object.
+ * @param settings Settings struct to update.
+ * @param property_id Property id to update.
+ * @param value Property value.
+ * @param pspec Gst param type spec.
+ */
+void gst_projectm_base_set_property(GObject *object,
+                                    GstBaseProjectMSettings *settings,
+                                    guint property_id, const GValue *value,
+                                    GParamSpec *pspec);
+
+/**
+ * set_property delegate for projectM setting structs.
+ *
+ * @param object Plugin gst object.
+ * @param settings Settings struct to update.
+ * @param property_id Property id to update.
+ * @param value Property value.
+ * @param pspec Gst param type spec.
+ */
+void gst_projectm_base_get_property(GObject *object,
+                                    GstBaseProjectMSettings *settings,
+                                    guint property_id, GValue *value,
+                                    GParamSpec *pspec);
+
+/**
+ * Plugin init() delegate for projectM settings and priv.
+ *
+ * @param settings Settings to init.
+ * @param priv Private obj to init.
+ */
+void gst_projectm_base_init(GstBaseProjectMSettings *settings,
+                            GstBaseProjectMPrivate *priv);
+
+/**
+ * Plugin finalize() delegate for projectM settings and priv.
+ *
+ * @param settings Settings to init.
+ * @param priv Private obj to init.
+ */
+void gst_projectm_base_finalize(GstBaseProjectMSettings *settings,
+                                GstBaseProjectMPrivate *priv);
+
+/**
+ * GL start delegate to setup projectM fbo rendering.
+ *
+ * @param plugin Plugin gst object.
+ * @param priv Plugin priv data.
+ * @param settings Plugin settings.
+ * @param context The gl context to use for projectM rendering.
+ * @param vinfo Video rendering details.
+ *
+ * @return TRUE on success.
+ */
+gboolean gst_projectm_base_gl_start(GObject *plugin,
+                                    GstBaseProjectMPrivate *priv,
+                                    GstBaseProjectMSettings *settings,
+                                    GstGLContext *context, GstVideoInfo *vinfo);
+
+/**
+ * GL stop delegate to clean up projectM rendering resources.
+ *
+ * @param plugin Plugin gst object.
+ * @param priv Plugin priv data.
+ */
+void gst_projectm_base_gl_stop(GObject *plugin, GstBaseProjectMPrivate *priv);
+
+/**
+ * Just pushes audio data to projectM without rendering.
+ *
+ * @param priv Plugin priv data.
+ * @param in_audio Audio data buffer to push to projectM.
+ */
+void gst_projectm_base_fill_audio_buffer_unlocked(GstBaseProjectMPrivate *priv,
+                                                  GstBuffer *in_audio);
+
+/**
+ * Render one frame with projectM.
+ *
+ * @param priv Plugin priv data.
+ * @param context ProjectM GL context.
+ * @param pts Current pts timestamp.
+ * @param in_audio Input audio buffer to push to projectM before rendering, may
+ * be NULL.
+ */
+void gst_projectm_base_fill_gl_memory_callback(GstBaseProjectMPrivate *priv,
+                                               GstGLContext *context,
+                                               GstGLFramebuffer *fbo,
+                                               GstClockTime pts,
+                                               GstBuffer *in_audio);
+
+/**
+ * Reset time offset for a new segment.
+ *
+ * @param priv Plugin priv data.
+ * @param pts_offset pts time offset for a new segment.
+ */
+void gst_projectm_base_set_segment_pts_offset(GstBaseProjectMPrivate *priv,
+                                              gint64 pts_offset);
+
+/**
+ * Install properties from projectM settings to given plugin class.
+ *
+ * @param gobject_class Plugin class to install properties to.
+ */
+void gst_projectm_base_install_properties(GObjectClass *gobject_class);
+
+/**
+ * Utility to parse a fraction from a string.
+ *
+ * @param str Fraction as string, ex. 60/1
+ * @param numerator Return ref for numerator.
+ * @param denominator Return ref for denominator.
+ *
+ * @return TRUE if the fraction was parsed correctly.
+ */
+gboolean gst_projectm_base_parse_fraction(const gchar *str, gint *numerator,
+                                          gint *denominator);
+
+#define GST_PROJECTM_BASE_LOCK(priv) (g_mutex_lock(&priv->projectm_lock))
+#define GST_PROJECTM_BASE_UNLOCK(priv) (g_mutex_unlock(&priv->projectm_lock))
+
+G_END_DECLS
+
+#endif // __GST_PROJECTM_BASE_H__

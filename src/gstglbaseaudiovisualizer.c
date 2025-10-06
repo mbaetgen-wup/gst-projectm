@@ -35,44 +35,72 @@
 #endif
 
 #include "gstglbaseaudiovisualizer.h"
+#include "gstpmaudiovisualizer.h"
+#include "renderbuffer.h"
+
+#include <GL/gl.h>
 #include <gst/gl/gl.h>
 
 /**
  * SECTION:GstGLBaseAudioVisualizer
- * @short_description: #GstAudioVisualizer subclass for injecting OpenGL
+ * @short_description: #GstPMAudioVisualizer subclass for injecting OpenGL
  * resources in a pipeline
  * @title: GstGLBaseAudioVisualizer
- * @see_also: #GstAudioVisualizer
+ * @see_also: #GstPMAudioVisualizer
  *
- * Wrapper for GstAudioVisualizer for handling OpenGL contexts.
+ * Wrapper for GstPMAudioVisualizer for handling OpenGL contexts.
  *
  * #GstGLBaseAudioVisualizer handles the nitty gritty details of retrieving an
  * OpenGL context. It also provides `gl_start()` and `gl_stop()` virtual methods
  * that ensure an OpenGL context is available and current in the calling thread
- * for initializing and cleaning up OpenGL dependent resources. The `gl_render`
- * virtual method is used to perform OpenGL rendering.
+ * for initializing and cleaning up OpenGL resources. The `render`
+ * virtual method of the GstPMAudioVisualizer is implemented to perform OpenGL
+ * rendering. The implementer provides an implementation for fill_gl_memory to
+ * render directly to gl memory.
+ *
+ * Typical plug-in call order for implementer-provided functions:
+ * - gl_start (once)
+ * - setup (every time caps change, typically once)
+ * - fill_gl_memory (once for each frame)
+ * - gl_stop (once)
  */
 
 #define GST_CAT_DEFAULT gst_gl_base_audio_visualizer_debug
-GST_DEBUG_CATEGORY_STATIC(GST_CAT_DEFAULT);
+GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
+
+#define DEFAULT_TIMESTAMP_OFFSET 0
+
+/**
+ * Allow 0.75 * fps frame duration as wait time for frame render queuing.
+ */
+#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N 3
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D 4
+#endif
+
+#define DEFAULT_MIN_FPS_N 1
+#define DEFAULT_MIN_FPS_D 1
 
 struct _GstGLBaseAudioVisualizerPrivate {
   GstGLContext *other_context;
 
   gint64 n_frames; /* total frames sent */
-  gboolean gl_result;
+
   gboolean gl_started;
 
   GRecMutex context_lock;
+  GstGLFramebuffer *fbo;
+  RBRenderBuffer render_buffer;
+  gboolean is_realtime;
 };
 
 /* Properties */
-enum { PROP_0 };
+enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D };
 
 #define gst_gl_base_audio_visualizer_parent_class parent_class
 G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
     GstGLBaseAudioVisualizer, gst_gl_base_audio_visualizer,
-    GST_TYPE_AUDIO_VISUALIZER,
+    GST_TYPE_PM_AUDIO_VISUALIZER,
     G_ADD_PRIVATE(GstGLBaseAudioVisualizer)
         GST_DEBUG_CATEGORY_INIT(gst_gl_base_audio_visualizer_debug,
                                 "glbaseaudiovisualizer", 0,
@@ -88,39 +116,93 @@ static void gst_gl_base_audio_visualizer_get_property(GObject *object,
                                                       GValue *value,
                                                       GParamSpec *pspec);
 
+/**
+ * Discover gl context / display from gst.
+ */
 static void gst_gl_base_audio_visualizer_set_context(GstElement *element,
                                                      GstContext *context);
+/**
+ * Handle pipeline state changes.
+ */
 static GstStateChangeReturn
 gst_gl_base_audio_visualizer_change_state(GstElement *element,
                                           GstStateChange transition);
 
-static gboolean gst_gl_base_audio_visualizer_render(GstAudioVisualizer *bscope,
-                                                    GstBuffer *audio,
-                                                    GstVideoFrame *video);
-static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav);
-static void gst_gl_base_audio_visualizer_stop(GstGLBaseAudioVisualizer *glav);
-static gboolean
-gst_gl_base_audio_visualizer_decide_allocation(GstAudioVisualizer *gstav,
-                                               GstQuery *query);
+/**
+ * Renders a video frame using gl, impl for parent class
+ * GstPMAudioVisualizerClass.
+ */
+static GstFlowReturn gst_gl_base_audio_visualizer_parent_render(
+    GstPMAudioVisualizer *bscope, GstBuffer *audio, GstClockTime pts,
+    GstClockTime running_time, guint64 frame_duration);
 
+/**
+ * Internal utility for resetting state on start \
+ */
+static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav);
+
+/**
+ * Internal utility for cleaning up gl context on stop
+ */
+static void gst_gl_base_audio_visualizer_stop(GstGLBaseAudioVisualizer *glav);
+
+/**
+ * GL memory pool allocation impl for parent class GstPMAudioVisualizerClass.
+ */
+static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
+    GstPMAudioVisualizer *pmav, GstQuery *query);
+
+/**
+ * called when format changes, default empty v-impl for this class. can be
+ * overwritten by implementer.
+ */
 static gboolean
 gst_gl_base_audio_visualizer_default_setup(GstGLBaseAudioVisualizer *glav);
+
+/**
+ * gl context is started and usable. called from gl thread. default empty v-impl
+ * for this class, can be overwritten by implementer.
+ */
 static gboolean
 gst_gl_base_audio_visualizer_default_gl_start(GstGLBaseAudioVisualizer *glav);
+
+/**
+ * GL context is shutting down. called from gl thread. default empty v-impl for
+ * this class. can be overwritten by implementer.
+ */
 static void
 gst_gl_base_audio_visualizer_default_gl_stop(GstGLBaseAudioVisualizer *glav);
-static gboolean gst_gl_base_audio_visualizer_default_gl_render(
-    GstGLBaseAudioVisualizer *glav, GstBuffer *audio, GstVideoFrame *video);
 
+/**
+ * Default empty v-impl for rendering a frame. called from gl thread. can be
+ * overwritten by implementer.
+ */
+static gboolean gst_gl_base_audio_visualizer_default_fill_gl_memory(
+    GstAVRenderParams *render_data);
+
+/**
+ * Find a valid gl context. lock must have already been acquired.
+ */
 static gboolean gst_gl_base_audio_visualizer_find_gl_context_unlocked(
     GstGLBaseAudioVisualizer *glav);
 
-static gboolean gst_gl_base_audio_visualizer_setup(GstAudioVisualizer *gstav);
+/**
+ * Called whenever the caps change, src and sink caps are both set. Impl for
+ * parent class GstPMAudioVisualizerClass.
+ */
+static gboolean
+gst_gl_base_audio_visualizer_parent_setup(GstPMAudioVisualizer *pmav);
+
+/**
+ * Called from gl thread: fbo rtt rending function.
+ */
+static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
+                                                 gpointer render_slot_ptr);
 
 static void
 gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
   GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
-  GstAudioVisualizerClass *gstav_class = GST_AUDIO_VISUALIZER_CLASS(klass);
+  GstPMAudioVisualizerClass *pmav_class = GST_PM_AUDIO_VISUALIZER_CLASS(klass);
   GstElementClass *element_class = GST_ELEMENT_CLASS(klass);
 
   gobject_class->finalize = gst_gl_base_audio_visualizer_finalize;
@@ -130,31 +212,77 @@ gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
   element_class->set_context =
       GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_set_context);
 
-  element_class->change_state =
+  pmav_class->change_state =
       GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_change_state);
 
-  gstav_class->decide_allocation =
-      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_decide_allocation);
-  gstav_class->setup = GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_setup);
+  pmav_class->decide_allocation =
+      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_parent_decide_allocation);
 
-  gstav_class->render = GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_render);
+  pmav_class->setup =
+      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_parent_setup);
+
+  pmav_class->render =
+      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_parent_render);
 
   klass->supported_gl_api = GST_GL_API_ANY;
+
   klass->gl_start =
       GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_default_gl_start);
+
   klass->gl_stop =
       GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_default_gl_stop);
-  klass->gl_render =
-      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_default_gl_render);
+
   klass->setup = GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_default_setup);
+
+  klass->fill_gl_memory =
+      GST_DEBUG_FUNCPTR(gst_gl_base_audio_visualizer_default_fill_gl_memory);
+
+  g_object_class_install_property(
+      gobject_class, PROP_MIN_FPS_N,
+      g_param_spec_int("min-fps-n", "Min FPS numerator",
+                       "Specifies the numerator for the min fps (EMA)", 1, 1000,
+                       DEFAULT_MIN_FPS_N,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property(
+      gobject_class, PROP_MIN_FPS_D,
+      g_param_spec_int("min-fps-d", "Min FPS denominator",
+                       "Specifies the denominator for the min fps (EMA)", 1,
+                       1000, DEFAULT_MIN_FPS_D,
+                       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+}
+
+/**
+ * Callback function to receive fps changes from render buffer.
+ *
+ * @param user_data Render buffer to use.
+ * @param frame_duration New fps frame duration.
+ */
+static void adjust_fps_callback(gpointer user_data, guint64 frame_duration) {
+
+  if (frame_duration == 0) {
+    return;
+  }
+
+  RBRenderBuffer *render_state = (RBRenderBuffer *)user_data;
+
+  GstPMAudioVisualizer *scope = GST_PM_AUDIO_VISUALIZER(render_state->plugin);
+
+  gst_pm_audio_visualizer_adjust_fps(scope, frame_duration);
 }
 
 static void gst_gl_base_audio_visualizer_init(GstGLBaseAudioVisualizer *glav) {
   glav->priv = gst_gl_base_audio_visualizer_get_instance_private(glav);
   glav->priv->gl_started = FALSE;
-  glav->priv->gl_result = TRUE;
+  glav->priv->fbo = NULL;
+  glav->priv->is_realtime = FALSE;
   glav->context = NULL;
+
+  glav->min_fps_n = DEFAULT_MIN_FPS_N;
+  glav->min_fps_d = DEFAULT_MIN_FPS_D;
+
   g_rec_mutex_init(&glav->priv->context_lock);
+
   gst_gl_base_audio_visualizer_start(glav);
 }
 
@@ -174,6 +302,15 @@ static void gst_gl_base_audio_visualizer_set_property(GObject *object,
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(object);
 
   switch (prop_id) {
+
+  case PROP_MIN_FPS_N:
+    glav->min_fps_n = g_value_get_int(value);
+    break;
+
+  case PROP_MIN_FPS_D:
+    glav->min_fps_d = g_value_get_int(value);
+    break;
+
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
     break;
@@ -187,6 +324,15 @@ static void gst_gl_base_audio_visualizer_get_property(GObject *object,
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(object);
 
   switch (prop_id) {
+
+  case PROP_MIN_FPS_N:
+    g_value_set_int(value, glav->min_fps_n);
+    break;
+
+  case PROP_MIN_FPS_D:
+    g_value_set_int(value, glav->min_fps_d);
+    break;
+
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
     break;
@@ -212,8 +358,7 @@ static void gst_gl_base_audio_visualizer_set_context(GstElement *element,
     if (old_display != new_display) {
       gst_clear_object(&glav->context);
       if (gst_gl_base_audio_visualizer_find_gl_context_unlocked(glav)) {
-        // TODO does this need to be handled ?
-        // gst_pad_mark_reconfigure (GST_BASE_SRC_PAD (glav));
+        gst_pad_mark_reconfigure(GST_BASE_SRC_PAD(glav));
       }
     }
   }
@@ -237,6 +382,7 @@ gst_gl_base_audio_visualizer_default_setup(GstGLBaseAudioVisualizer *glav) {
 static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
                                                   gpointer data) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(data);
+  GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(data);
   GstGLBaseAudioVisualizerClass *glav_class =
       GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(glav);
 
@@ -244,7 +390,30 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
   gst_gl_insert_debug_marker(glav->context, "starting element %s",
                              GST_OBJECT_NAME(glav));
 
+  // init fbo for rtt
+  glav->priv->fbo = gst_gl_framebuffer_new_with_default_depth(
+      context, GST_VIDEO_INFO_WIDTH(&pmav->vinfo),
+      GST_VIDEO_INFO_HEIGHT(&pmav->vinfo));
+
+  // initialize render buffer
+  GstClockTime max_frame_duration =
+      gst_util_uint64_scale_int(GST_SECOND, glav->min_fps_d, glav->min_fps_n);
+
+  GstClockTime caps_frame_duration =
+      gst_util_uint64_scale_int(GST_SECOND, GST_VIDEO_INFO_FPS_D(&pmav->vinfo),
+                                GST_VIDEO_INFO_FPS_N(&pmav->vinfo));
+
+  rb_init_render_buffer(&glav->priv->render_buffer, GST_OBJECT(glav),
+                        gst_gl_base_audio_visualizer_fill_gl,
+                        adjust_fps_callback, max_frame_duration,
+                        caps_frame_duration, glav->priv->is_realtime);
+
+  // cascade gl start to implementor
   glav->priv->gl_started = glav_class->gl_start(glav);
+
+  // get gl rendering going
+  rb_start_render_thread(&glav->priv->render_buffer, glav->context,
+                         pmav->srcpad);
 }
 
 static void
@@ -256,87 +425,219 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
   GstGLBaseAudioVisualizerClass *glav_class =
       GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(glav);
 
-  GST_INFO_OBJECT(glav, "stopping");
+  GST_INFO_OBJECT(glav, "gl stopping");
   gst_gl_insert_debug_marker(glav->context, "stopping element %s",
                              GST_OBJECT_NAME(glav));
 
-  if (glav->priv->gl_started)
+  // stop gl rendering first
+  rb_stop_render_thread(&glav->priv->render_buffer);
+
+  // clean up implementor
+  if (glav->priv->gl_started) {
     glav_class->gl_stop(glav);
+  }
 
   glav->priv->gl_started = FALSE;
+
+  // clean up render buffer
+  rb_dispose_render_buffer(&glav->priv->render_buffer);
+
+  // clean up state
+  if (glav->priv->fbo) {
+    gst_object_unref(glav->priv->fbo);
+  }
 }
 
-static gboolean gst_gl_base_audio_visualizer_setup(GstAudioVisualizer *gstav) {
-  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(gstav);
+static gboolean gst_gl_base_audio_visualizer_default_fill_gl_memory(
+    GstAVRenderParams *render_data) {
+  return TRUE;
+}
+
+static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
+                                                 gpointer render_slot_ptr) {
+
+  // we're inside the gl thread!
+
+  RBSlot *render_slot = (RBSlot *)render_slot_ptr;
+
+  GstGLBaseAudioVisualizer *glav =
+      GST_GL_BASE_AUDIO_VISUALIZER(render_slot->plugin);
+
+  GstGLBaseAudioVisualizerClass *klass =
+      GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(render_slot->plugin);
+
+  GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(render_slot->plugin);
+
+  GstBuffer *out_buf;
+  GstVideoFrame out_video;
+
+  // obtain output buffer from the (GL texture backed) pool
+  gst_pm_audio_visualizer_util_prepare_output_buffer(pmav, &out_buf);
+
+  // Check for GL sync meta
+  GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
+
+  if (sync_meta) {
+    // wait until GPU is done using this buffer should not be needed
+    // gst_gl_sync_meta_wait(sync_meta, glav->context);
+  }
+
+  // GstClockTime after_prepare = gst_util_get_timestamp();
+
+  // map output video frame to buffer outbuf with gl flags
+  gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
+                      GST_MAP_WRITE | GST_MAP_GL |
+                          GST_VIDEO_FRAME_MAP_FLAG_NO_REF);
+
+  // GstClockTime after_map = gst_util_get_timestamp();
+  GstAVRenderParams ds_rd;
+  ds_rd.in_audio = render_slot->in_audio;
+  ds_rd.mem = GST_GL_MEMORY_CAST(gst_buffer_peek_memory(out_buf, 0));
+  ds_rd.fbo = glav->priv->fbo;
+  ds_rd.pts = render_slot->pts;
+  ds_rd.plugin = glav;
+
+  GST_TRACE_OBJECT(render_slot->plugin, "filling gl memory %p", ds_rd.mem);
+
+  // call virtual render function with audio and video
+  render_slot->gl_result = klass->fill_gl_memory(&ds_rd);
+
+  gst_video_frame_unmap(&out_video);
+
+  if (sync_meta)
+    gst_gl_sync_meta_set_sync_point(sync_meta, glav->context);
+
+  render_slot->out_buf = out_buf;
+  out_buf = NULL;
+}
+
+static GstFlowReturn gst_gl_base_audio_visualizer_fill(
+    GstPMAudioVisualizer *bscope, GstGLBaseAudioVisualizer *glav,
+    GstBuffer *audio, GstClockTime pts, GstClockTime running_time,
+    guint64 frame_duration) {
+
+  g_rec_mutex_lock(&glav->priv->context_lock);
+  if (G_UNLIKELY(!glav->context))
+    goto not_negotiated;
+
+  /* 0 framerate and we are at the second frame, eos */
+  if (G_UNLIKELY(GST_VIDEO_INFO_FPS_N(&bscope->vinfo) == 0 &&
+                 glav->priv->n_frames == 1))
+    goto eos;
+
+  // prepare args for queuing frame rendering
+  RBQueueArgs args;
+  args.render_buffer = &glav->priv->render_buffer;
+  args.in_audio = audio;
+  args.pts = pts;
+  args.frame_duration = frame_duration;
+  args.latency = bscope->latency;
+  args.running_time = running_time;
+
+  if (glav->priv->is_realtime == FALSE) {
+    // wait for each frame to complete
+    args.sync_rendering = TRUE;
+
+    // unlimited for offline rendering, frames will never be dropped by QoS.
+    args.max_wait = GST_CLOCK_TIME_NONE;
+  } else {
+    // fire and forget, mapping n samples per frame from upstream keeps us in
+    // sync
+    args.sync_rendering = FALSE;
+
+    // limit wait based on fps factor, make sure we never wait too long in order
+    // to keep in sync
+    args.max_wait = (GstClockTimeDiff)gst_util_uint64_scale_int(
+        frame_duration, MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N,
+        MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D);
+  }
+
+  // dispatch gst_gl_base_audio_visualizer_fill_gl to the gl render buffer,
+  // rendering is deferred. This may block for a while though.
+  rb_queue_render_job_warn(&args);
+
+  glav->priv->n_frames++;
+
+  g_rec_mutex_unlock(&glav->priv->context_lock);
+
+  return GST_FLOW_OK;
+
+not_negotiated: {
+  g_rec_mutex_unlock(&glav->priv->context_lock);
+  GST_ELEMENT_ERROR(glav, CORE, NEGOTIATION, (NULL),
+                    (("format wasn't negotiated before get function")));
+  return GST_FLOW_NOT_NEGOTIATED;
+}
+eos: {
+  g_rec_mutex_unlock(&glav->priv->context_lock);
+  GST_DEBUG_OBJECT(glav, "eos: 0 framerate, frame %d",
+                   (gint)glav->priv->n_frames);
+  return GST_FLOW_EOS;
+}
+}
+
+/**
+ * Find out if the pipeline is using a real-time clock.
+ *
+ * @param element GST element
+ * @return TRUE in case the element uses a system clock.
+ */
+static gboolean is_pipeline_realtime(GstElement *element) {
+  GstClock *clock = gst_element_get_clock(element);
+  gboolean is_realtime = FALSE;
+
+  if (clock) {
+    // Compare to the system clock (used for real-time playback)
+    is_realtime = GST_IS_SYSTEM_CLOCK(clock);
+    gst_object_unref(clock);
+  }
+
+  return is_realtime;
+}
+
+static gboolean
+gst_gl_base_audio_visualizer_parent_setup(GstPMAudioVisualizer *pmav) {
+  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(pmav);
   GstGLBaseAudioVisualizerClass *glav_class =
-      GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(gstav);
+      GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(pmav);
+
+  // configure QoS for the pipeline, disabled for offline rendering
+  g_rec_mutex_lock(&glav->priv->context_lock);
+
+  gboolean is_realtime = is_pipeline_realtime(GST_ELEMENT(pmav));
+  glav->priv->is_realtime = is_realtime;
+
+  g_rec_mutex_unlock(&glav->priv->context_lock);
+
+  // update render buffer config
+  rb_set_qos_enabled(&glav->priv->render_buffer, is_realtime);
+
+  GstClockTime caps_frame_duration =
+      gst_util_uint64_scale_int(GST_SECOND, GST_VIDEO_INFO_FPS_D(&pmav->vinfo),
+                                GST_VIDEO_INFO_FPS_N(&pmav->vinfo));
+  rb_set_caps_frame_duration(&glav->priv->render_buffer, caps_frame_duration);
+
+  GST_INFO_OBJECT(
+      glav,
+      "GL setup - render config: real-time: %s, caps-frame-duration: "
+      "%" GST_TIME_FORMAT
+      ", min-fps: %d/%d, min-fps-duration: %" GST_TIME_FORMAT,
+      is_realtime ? "true" : "false", GST_TIME_ARGS(caps_frame_duration),
+      glav->min_fps_n, glav->min_fps_d,
+      GST_TIME_ARGS(glav->priv->render_buffer.max_frame_duration));
 
   // cascade setup to the derived plugin after gl initialization has been
   // completed
   return glav_class->setup(glav);
 }
 
-static gboolean gst_gl_base_audio_visualizer_default_gl_render(
-    GstGLBaseAudioVisualizer *glav, GstBuffer *audio, GstVideoFrame *video) {
-  return TRUE;
-}
-
-typedef struct {
-  GstGLBaseAudioVisualizer *glav;
-  GstBuffer *in_audio;
-  GstVideoFrame *out_video;
-} GstGLRenderCallbackParams;
-
-static void
-gst_gl_base_audio_visualizer_gl_thread_render_callback(gpointer params) {
-  GstGLRenderCallbackParams *cb_params = (GstGLRenderCallbackParams *)params;
-  GstGLBaseAudioVisualizerClass *klass =
-      GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(cb_params->glav);
-
-  // inside gl thread: call virtual render function with audio and video
-  cb_params->glav->priv->gl_result = klass->gl_render(
-      cb_params->glav, cb_params->in_audio, cb_params->out_video);
-}
-
-static gboolean gst_gl_base_audio_visualizer_render(GstAudioVisualizer *bscope,
-                                                    GstBuffer *audio,
-                                                    GstVideoFrame *video) {
+static GstFlowReturn gst_gl_base_audio_visualizer_parent_render(
+    GstPMAudioVisualizer *bscope, GstBuffer *audio, GstClockTime pts,
+    GstClockTime running_time, guint64 frame_duration) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(bscope);
-  GstGLRenderCallbackParams cb_params;
-  GstGLWindow *window;
 
-  g_rec_mutex_lock(&glav->priv->context_lock);
-
-  // wrap params into cb_params struct to pass them to the GL window/thread via
-  // userdata pointer
-  cb_params.glav = glav;
-  cb_params.in_audio = audio;
-  cb_params.out_video = video;
-
-  window = gst_gl_context_get_window(glav->context);
-
-  // dispatch render call through the gl thread
-  // call is blocking, accessing audio and video params from gl thread *should*
-  // be safe
-  gst_gl_window_send_message(
-      window,
-      GST_GL_WINDOW_CB(gst_gl_base_audio_visualizer_gl_thread_render_callback),
-      &cb_params);
-
-  gst_object_unref(window);
-
-  g_rec_mutex_unlock(&glav->priv->context_lock);
-
-  if (glav->priv->gl_result) {
-    glav->priv->n_frames++;
-  } else {
-    // gl error
-    GST_ELEMENT_ERROR(glav, RESOURCE, NOT_FOUND,
-                      (("failed to render audio visualizer")),
-                      (("A GL error occurred")));
-  }
-
-  return glav->priv->gl_result;
+  return gst_gl_base_audio_visualizer_fill(bscope, glav, audio, pts,
+                                           running_time, frame_duration);
 }
 
 static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav) {
@@ -493,10 +794,9 @@ error: {
 }
 }
 
-static gboolean
-gst_gl_base_audio_visualizer_decide_allocation(GstAudioVisualizer *gstav,
-                                               GstQuery *query) {
-  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(gstav);
+static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
+    GstPMAudioVisualizer *pmav, GstQuery *query) {
+  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(pmav);
   GstGLContext *context;
   GstBufferPool *pool = NULL;
   GstStructure *config;
@@ -524,7 +824,8 @@ gst_gl_base_audio_visualizer_decide_allocation(GstAudioVisualizer *gstav,
     gst_video_info_init(&vinfo);
     gst_video_info_from_caps(&vinfo, caps);
     size = vinfo.size;
-    min = max = 0;
+    min = 0;
+    max = 0;
     update_pool = FALSE;
   }
 
@@ -536,6 +837,12 @@ gst_gl_base_audio_visualizer_decide_allocation(GstAudioVisualizer *gstav,
   }
   config = gst_buffer_pool_get_config(pool);
 
+  // there should be at least 2 textures, so that one is rendered while the
+  // other one is pushed downstream
+  // todo: pool size config properties needed ?
+  if (min < 2) {
+    min = 2;
+  }
   gst_buffer_pool_config_set_params(config, caps, size, min, max);
   gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
   if (gst_query_find_allocation_meta(query, GST_GL_SYNC_META_API_TYPE, NULL))
@@ -543,6 +850,9 @@ gst_gl_base_audio_visualizer_decide_allocation(GstAudioVisualizer *gstav,
                                       GST_BUFFER_POOL_OPTION_GL_SYNC_META);
   gst_buffer_pool_config_add_option(
       config, GST_BUFFER_POOL_OPTION_VIDEO_GL_TEXTURE_UPLOAD_META);
+
+  gst_buffer_pool_config_add_option(
+      config, GST_BUFFER_POOL_OPTION_GL_TEXTURE_TARGET_2D);
 
   gst_buffer_pool_set_config(pool, config);
 
@@ -567,10 +877,6 @@ gst_gl_base_audio_visualizer_change_state(GstElement *element,
       glav, "changing state: %s => %s",
       gst_element_state_get_name(GST_STATE_TRANSITION_CURRENT(transition)),
       gst_element_state_get_name(GST_STATE_TRANSITION_NEXT(transition)));
-
-  ret = GST_ELEMENT_CLASS(parent_class)->change_state(element, transition);
-  if (ret == GST_STATE_CHANGE_FAILURE)
-    return ret;
 
   switch (transition) {
   case GST_STATE_CHANGE_READY_TO_NULL:

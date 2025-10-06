@@ -57,23 +57,48 @@ The documentation has been organized into distinct files, each dedicated to a sp
 - **[OSX](docs/OSX.md)**
 - **[Windows](docs/WINDOWS.md)**
 
-Once the plugin has been installed, you can use it something like this:
+Once the plugin has been installed, you can use it something like this to render in real-time to an OpenGL window:
 
 ```shell
-gst-launch pipewiresrc ! queue ! audioconvert ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 ! video/x-raw,width=2048,height=1440,framerate=60/1 ! videoconvert ! xvimagesink sync=false
+gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
 ```
 
-Or to convert an audio file to video:
+To render from a live source in real-time to a gl window, an identity element can be used to provide a proper timestamp source for the pipeline. This example also includes a texture directory: 
+```shell
+gst-launch souphttpsrc location=http://your-radio-stream is-live=true ! queue ! decodebin ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! identity single-segment=true sync=true ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 texture-dir=/usr/local/share/projectM/presets-milkdrop-texture-pack ! video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1 ! glimagesink sync=false
+```
+
+Or to convert an audio file to video using offline rendering:
 
 ```shell
+gst-launch-1.0 -e \
 filesrc location=input.mp3 ! decodebin name=dec \
     decodebin ! tee name=t \
       t. ! queue ! audioconvert ! audioresample ! \
             capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! avenc_aac bitrate=256000 ! queue ! mux. \
-      t. ! queue ! audioconvert ! projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
-            identity sync=false ! videoconvert ! videorate ! video/x-raw,framerate=60/1,width=3840,height=2160 ! \
+      t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! \
+           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+            identity sync=false ! videoconvert ! videorate ! video/x-raw\(memory:GLMemory\),framerate=60/1,width=3840,height=2160 ! \
+            gldownload \
             x264enc bitrate=35000 key-int-max=300 speed-preset=veryslow ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
   mp4mux name=mux ! filesink location=render.mp4;
+```
+
+Or converting an audio file with the nVidia optimized encoder, directly from GL memory:
+```shell
+gst-launch-1.0 -e \
+  filesrc location=input.mp3 ! \
+    decodebin ! tee name=t \
+      t. ! queue ! audioconvert ! audioresample ! \
+            capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! \
+            avenc_aac bitrate=320000 ! queue ! mux. \
+      t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! projectm \
+            preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+            identity sync=false ! videoconvert ! videorate ! \
+            video/x-raw\(memory:GLMemory\),framerate=60/1,width=1920,height=1080 ! \
+            nvh264enc ! h264parse ! \
+            video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
+    mp4mux name=mux ! filesink location=render.mp4;
 ```
 
 Available options
@@ -193,21 +218,23 @@ If you have your own ProjectM preset files:
 Once the plugin has been installed, you can use it something like this:
 
 ```shell
-gst-launch pipewiresrc ! queue ! audioconvert ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 ! video/x-raw,width=2048,height=1440,framerate=60/1 ! videoconvert ! xvimagesink sync=false
+gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
 ```
 
 Or to convert an audio file to video:
 
 ```shell
 gst-launch-1.0 -e \
-  filesrc location=input.mp3  ! \
+  filesrc location=input.mp3 ! decodebin name=dec \
     decodebin ! tee name=t \
       t. ! queue ! audioconvert ! audioresample ! \
-            capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! avenc_aac bitrate=320000 ! queue ! mux. \
-      t. ! queue ! audioconvert ! projectm preset=/usr/local/share/projectM/presets texture-dir=/usr/local/share/projectM/textures preset-duration=6 mesh-size=1024,576 ! \
-            identity sync=false ! videoconvert ! videorate ! video/x-raw,framerate=60/1,width=3840,height=2160 ! \
-            x264enc bitrate=50000 key-int-max=200 speed-preset=veryslow ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
-    mp4mux name=mux ! filesink location=output.mp4
+            capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! avenc_aac bitrate=256000 ! queue ! mux. \
+      t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! \
+           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+            identity sync=false ! videoconvert ! videorate ! video/x-raw\(memory:GLMemory\),framerate=60/1,width=3840,height=2160 ! \
+            gldownload \
+            x264enc bitrate=35000 key-int-max=300 speed-preset=veryslow ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
+  mp4mux name=mux ! filesink location=render.mp4;
 ```
 
 You may need to adjust some elements which may or may not be present in your GStreamer installation, such as x264enc, avenc_aac, etc.
@@ -219,6 +246,50 @@ gst-inspect projectm
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Technical Details
+
+### 🖼️ OpenGL Rendering and Buffer Handling
+
+- projectM output is rendered to OpenGL textures via **Frame Buffer Object (FBO)**.
+- **Textures are pooled** and reused across frames to avoid excessive GPU memory allocation and de-allocation.
+- Each rendered texture becomes a GStreamer video buffer pushed downstream. **All video buffers stay in GPU memory**.
+
+---
+
+### ⏱️ Timing and Synchronization
+
+The plugin synchronizes rendering to the GStreamer pipeline clock using **audio PTS (presentation timestamp) as the leading reference**.
+
+Pipeline caps control the desired video framerate for rendering. The render loop is **push-based** to conform with 
+GStreamer's pipeline timing concept, and to enable faster-than-real-time rendering.
+A **fixed number of audio samples is consumed per video frame**. 
+
+**Example:** `735 samples per frame at 44.1 kHz = ~60 FPS.`
+ 
+
+In real-time pipelines, frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
+pipeline caps fps.
+
+Video frame PTS offset is derived from the **first audio buffer PTS** or **segment event** plus accumulated samples to align with audio timing.
+
+
+| Timing Source                    | Source             | Applies to clock | Purpose                                                                                    |
+|----------------------------------|--------------------|------------------|--------------------------------------------------------------------------------------------|
+| Audio Timestamps                 | Audio Input        | Always           | Determine video timing and sync.                                                           |
+| Sample Rate / Pipeline FPS       | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                          |
+| Segment Info                     | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                           |
+| QoS Feedback                     | QoS Event          | Real-time        | Skips outdated frames to reduce latency.                                                   |
+| Render Frame Drop                | Render Loop        | Real-time        | Drop frames that cannot be rendered in time.                                               |
+| Exponential Moving Average (EMA) | Render Loop        | Real-time        | Adjust plugin target fps when frame render time exceeds real-time budget most of the time. |
+
+
+---
+
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
 
 <!-- CONTRIBUTING -->
 
@@ -260,6 +331,8 @@ Distributed under the LGPL-2.1 license. See `LICENSE` for more information.
 Blaquewithaq (Discord: SoFloppy#1289) - [@anomievision](https://twitter.com/anomievision) - anomievision@gmail.com
 
 Mischa (Discord: mish) - [@revmischa](https://github.com/revmischa)
+
+Michael [@mbaetgen-wup](https://github.com/mbaetgen-wup) - michael -at- widerup.com
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

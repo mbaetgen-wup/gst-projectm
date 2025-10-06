@@ -15,18 +15,22 @@ find_package(GStreamer REQUIRED COMPONENTS gstreamer-audio gstreamer-gl gstreame
 find_package(GLIB2 REQUIRED)
 
 add_library(gstprojectm SHARED
-    src/caps.h
-    src/caps.c
+    src/gstprojectmcaps.h
+    src/gstprojectmcaps.c
     src/debug.h
     src/debug.c
-    src/config.h
-    src/enums.h
-    src/plugin.h
-    src/plugin.c
-    src/projectm.h
-    src/projectm.c
+    src/gstprojectmconfig.h
+    src/gstprojectm.h
+    src/gstprojectm.c
     src/gstglbaseaudiovisualizer.h
     src/gstglbaseaudiovisualizer.c
+    src/gstpmaudiovisualizer.h
+    src/gstpmaudiovisualizer.c
+    src/gstprojectmbase.h
+    src/gstprojectmbase.c
+    src/register.c
+    src/renderbuffer.h
+    src/renderbuffer.c
 )
 
 target_include_directories(gstprojectm
@@ -73,3 +77,5 @@ target_link_libraries(gstprojectm
         ${GLIB2_LIBRARIES}
         ${GLIB2_GOBJECT_LIBRARIES}
 )
+
+add_subdirectory(example)
