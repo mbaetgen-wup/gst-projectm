@@ -34,7 +34,8 @@ switch ($args) {
         & gst-launch-1.0 -v `
             audiotestsrc ! queue ! audioconvert ! `
             projectm `
-            ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false
+            is-live=true `
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false
         break
     }
 
@@ -43,7 +44,8 @@ switch ($args) {
         & gst-launch-1.0 -v `
             audiotestsrc ! queue ! audioconvert ! `
             projectm preset="test/presets/215-wave.milk" `
-            ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false
+            is-live=true `
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false
         break
     }
 
@@ -63,7 +65,8 @@ switch ($args) {
             mesh-size="512,512" `
             easter-egg=0.75 `
             preset-locked=false `
-            ! "video/x-raw,width=512,height=512,framerate=30/1" ! videoconvert ! xvimagesink sync=false
+            is-live=true `
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=30/1" ! glimagesink sync=false
         break
     }
 
@@ -71,7 +74,7 @@ switch ($args) {
         $env:GST_DEBUG = "3"
         & gst-launch-1.0 -v `
             filesrc location="test/audio/upbeat-future-bass.mp3" ! decodebin ! audioconvert ! `
-            projectm ! videoscale ! videoconvert ! video/x-raw,width=1280,height=720 ! `
+            projectm ! video/x-raw(memory:GLMemory),width=1280,height=720 ! gldownload ! videoscale ! videoconvert`
             x264enc ! mp4mux ! filesink location="test/output/test_video.mp4"
         break
     }
@@ -82,7 +85,7 @@ switch ($args) {
             filesrc location="test/audio/upbeat-future-bass.mp3" ! decodebin name=dec ! `
             audioconvert ! avenc_aac ! avmux_mp4 ! filesink location="test/output/video2.mp4" `
             dec. ! `
-            projectm ! videoconvert ! x264enc ! avenc_mp4 ! avmux_mp4.video_0
+            projectm ! gldownload ! videoconvert ! x264enc ! avenc_mp4 ! avmux_mp4.video_0
         break
     }
 

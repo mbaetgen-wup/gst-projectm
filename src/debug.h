@@ -1,7 +1,6 @@
 #ifndef __GST_PROJECTM_DEBUG_H__
 #define __GST_PROJECTM_DEBUG_H__
 
-#include <glib.h>
 #include <gst/gl/gl.h>
 
 G_BEGIN_DECLS
@@ -26,7 +25,7 @@ G_BEGIN_DECLS
  * @param context The OpenGL context.
  * @param data Unused.
  */
-void gl_error_handler(GstGLContext *context, gpointer data);
+void gl_error_handler(GstGLContext *context);
 
 G_END_DECLS
 
