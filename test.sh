@@ -4,10 +4,8 @@ set -e
 # Set variables based on OS
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     LIB_EXT="so"
-    VIDEO_SINK="xvimagesink"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     LIB_EXT="dylib"
-    VIDEO_SINK="osxvideosink"
 else
     echo "Unsupported OS!"
     exit 1
@@ -52,14 +50,16 @@ case "$1" in
         GST_DEBUG=projectm:5 gst-launch-1.0 -v \
             audiotestsrc ! queue ! audioconvert ! \
             projectm \
-            ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! $VIDEO_SINK sync=false
+            is-live=true \
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false
         ;;
 
     "--preset")
         GST_DEBUG=4 gst-launch-1.0 -v \
             audiotestsrc ! queue ! audioconvert ! \
             projectm preset="test/presets/250-wavecode.milk.milk" \
-            ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! $VIDEO_SINK sync=false
+            is-live=true \
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false
         ;;
 
     "--properties")
@@ -77,13 +77,14 @@ case "$1" in
             mesh-size="512,512" \
             easter-egg=0.75 \
             preset-locked=false \
-            ! "video/x-raw,width=512,height=512,framerate=30/1" ! videoconvert ! $VIDEO_SINK sync=false
+            is-live=true \
+            ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=30/1" ! glimagesink sync=false
         ;;
 
     "--output-video")
         GST_DEBUG=3 gst-launch-1.0 -v \
             filesrc location="test/audio/upbeat-future-bass.mp3" ! decodebin ! audioconvert ! \
-            projectm preset="test/presets/250-wavecode.milk.milk" ! videoscale ! videoconvert ! video/x-raw,width=1280,height=720 ! \
+            projectm preset="test/presets/250-wavecode.milk.milk" ! "video/x-raw(memory:GLMemory),width=1280,height=720" ! gldownload ! videoscale ! videoconvert \
             x264enc ! mp4mux ! filesink location="test/output/test_video.mp4"
         ;;
 
@@ -92,7 +93,7 @@ case "$1" in
             filesrc location="test/audio/upbeat-future-bass.mp3" ! decodebin name=dec ! \
             audioconvert ! avenc_aac ! avmux_mp4 ! filesink location="test/output/video2.mp4" \
             dec. ! \
-            projectm preset="test/presets/250-wavecode.milk.milk" ! videoconvert ! x264enc ! avenc_mp4 ! avmux_mp4.video_0
+            projectm preset="test/presets/250-wavecode.milk.milk" ! gldownload ! videoconvert ! x264enc ! avenc_mp4 ! avmux_mp4.video_0
         ;;
 
     *)

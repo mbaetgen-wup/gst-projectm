@@ -66,7 +66,7 @@ Copy-Item -Path "dist\gstprojectm.dll" -Destination "$Env:USERPROFILE\.gstreamer
 To utilize the plugin with the example, please install GStreamer
 
 ```powershell
-gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false
+gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false
 ```
 
 ### Testing

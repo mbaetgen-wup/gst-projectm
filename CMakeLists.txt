@@ -14,19 +14,27 @@ find_package(projectM4 4.1.0 REQUIRED Playlist)
 find_package(GStreamer REQUIRED COMPONENTS gstreamer-audio gstreamer-gl gstreamer-pbutils gstreamer-video)
 find_package(GLIB2 REQUIRED)
 
-add_library(gstprojectm SHARED
-    src/caps.h
-    src/caps.c
+add_library(gstprojectm MODULE
+    src/bufferdisposal.h
+    src/bufferdisposal.c
     src/debug.h
     src/debug.c
-    src/config.h
-    src/enums.h
-    src/plugin.h
-    src/plugin.c
-    src/projectm.h
-    src/projectm.c
     src/gstglbaseaudiovisualizer.h
     src/gstglbaseaudiovisualizer.c
+    src/gstpmaudiovisualizer.h
+    src/gstpmaudiovisualizer.c
+    src/gstprojectm.h
+    src/gstprojectm.c
+    src/gstprojectmbase.h
+    src/gstprojectmbase.c
+    src/gstprojectmcaps.h
+    src/gstprojectmcaps.c
+    src/gstprojectmconfig.h
+    src/pushbuffer.h
+    src/pushbuffer.c
+    src/register.c
+    src/renderbuffer.h
+    src/renderbuffer.c
 )
 
 target_include_directories(gstprojectm

@@ -15,7 +15,7 @@
   - [x] OSX
   - [ ] Windows (see issues)
 - [x] Accepting an audio/x-raw stream (coded to add more formats later, if needed)
-- [x] Generating a video/x-raw stream (coded to add more formats later, if needed)
+- [x] Generating a video/x-raw(memory:GLMemory) stream (coded to add more formats later, if needed)
 - [x] Utilizing the new C API in libprojectM 4.0
 - [x] Implemented properties with defaults (aka settings)
 

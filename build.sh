@@ -4,10 +4,8 @@ set -e
 # Set variables based on OS
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     LIB_EXT="so"
-    VIDEO_SINK="xvimagesink"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     LIB_EXT="dylib"
-    VIDEO_SINK="osxvideosink"
 else
     echo "Unsupported OS!"
     exit 1
@@ -99,7 +97,7 @@ prompt_install() {
             # Print example command
             echo
             echo "Done! Here's an example command:"
-            echo "gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! $VIDEO_SINK sync=false"
+            echo "gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! \"video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1\" ! videoconvert ! glimagesink sync=false"
         else
             echo
             echo "Done!"

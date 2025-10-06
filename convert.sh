@@ -154,13 +154,16 @@ gst-launch-1.0 -e \
       t. ! queue ! audioconvert ! audioresample ! \
             capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! \
             avenc_aac bitrate=320000 ! queue ! mux. \
-      t. ! queue ! audioconvert ! projectm \
+      t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! \
+          projectm \
             preset=$PRESET_PATH \
             texture-dir=$TEXTURE_DIR \
             preset-duration=$PRESET_DURATION \
+            is-live=false \
             mesh-size=${MESH_X},${MESH_Y} ! \
             identity sync=false ! videoconvert ! videorate ! \
-            video/x-raw,framerate=$FRAMERATE/1,width=$VIDEO_WIDTH,height=$VIDEO_HEIGHT ! \
+            video/x-raw\(memory:GLMemory\),framerate=$FRAMERATE/1,width=$VIDEO_WIDTH,height=$VIDEO_HEIGHT ! \
+            gldownload ! \
             x264enc bitrate=$(($BITRATE * 1000)) key-int-max=200 speed-preset=$SPEED_PRESET ! \
             video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
     mp4mux name=mux ! filesink location=$OUTPUT_FILE &

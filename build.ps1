@@ -54,7 +54,7 @@ function Start-ConfigureBuild {
         -DVCPKG_TARGET_TRIPLET=x64-windows `
         -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" `
         -DCMAKE_VERBOSE_MAKEFILE=YES `
-        -DCMAKE_PREFIX_PATH="${Env:PROJECTM_ROOT}/lib/cmake/projectM4"
+        -DCMAKE_PREFIX_PATH="${Env:PROJECTM_ROOT}"
 }
 
 # Copy required DLLs to dist directory
@@ -137,7 +137,7 @@ function Invoke-PromptInstall {
             # Print example command
             Write-Host
             Write-Host "Done! Here's an example command:"
-            Write-Host 'gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false'
+            Write-Host 'gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw(memory:GLMemory),width=512,height=512,framerate=60/1" ! glimagesink sync=false'
         }
         else {
             Write-Host
