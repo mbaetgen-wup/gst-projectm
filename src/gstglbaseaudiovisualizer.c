@@ -34,7 +34,6 @@
 #include "config.h"
 #endif
 
-#include <GL/gl.h>
 #include <gst/gl/gl.h>
 
 #include "gstglbaseaudiovisualizer.h"

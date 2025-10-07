@@ -43,7 +43,6 @@
 #ifndef __RENDERBUFFER_H__
 #define __RENDERBUFFER_H__
 
-#include <GL/gl.h>
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
 

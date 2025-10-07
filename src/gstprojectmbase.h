@@ -7,7 +7,6 @@
 #ifndef __GST_PROJECTM_BASE_H__
 #define __GST_PROJECTM_BASE_H__
 
-#include <gst/gl/gstglmemory.h>
 #include <gst/gst.h>
 #include <projectM-4/playlist.h>
 #include <projectM-4/projectM.h>
