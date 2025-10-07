@@ -410,10 +410,12 @@ static gboolean gst_pm_audio_visualizer_do_setup(GstPMAudioVisualizer *scope) {
 
   g_mutex_lock(&scope->priv->config_lock);
 
-  scope->priv->spf = gst_util_uint64_scale_int(
+  const guint spf = gst_util_uint64_scale_int(
       GST_AUDIO_INFO_RATE(&scope->ainfo), GST_VIDEO_INFO_FPS_D(&scope->vinfo),
       GST_VIDEO_INFO_FPS_N(&scope->vinfo));
-  scope->req_spf = scope->priv->spf;
+
+  scope->req_spf = spf;
+  scope->priv->spf = spf;
 
   g_mutex_unlock(&scope->priv->config_lock);
 
@@ -430,8 +432,7 @@ static gboolean gst_pm_audio_visualizer_do_setup(GstPMAudioVisualizer *scope) {
                   GST_AUDIO_INFO_CHANNELS(&scope->ainfo),
                   GST_AUDIO_INFO_BPF(&scope->ainfo));
 
-  GST_INFO_OBJECT(scope, "blocks: spf %u, req_spf %u", scope->priv->spf,
-                  scope->req_spf);
+  GST_INFO_OBJECT(scope, "blocks: spf / req_spf %u", spf);
 
   g_mutex_lock(&scope->priv->config_lock);
   scope->priv->ready = TRUE;
@@ -721,7 +722,7 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
   GstFlowReturn ret = GST_FLOW_OK;
   GstPMAudioVisualizer *scope = GST_PM_AUDIO_VISUALIZER(parent);
   GstPMAudioVisualizerClass *klass;
-  GstClockTime ts, running_time, frame_duration;
+  GstClockTime ts, frame_duration;
   guint avail, sbpf;
   // databuf is a buffer holding one video frame worth of audio data used as
   // temp buffer for copying from the adapter only
@@ -865,10 +866,6 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
     /* map pts ts via segment for general use */
     ts = gst_segment_to_stream_time(&scope->priv->segment, GST_FORMAT_TIME, ts);
 
-    /* get running time for passing through */
-    running_time =
-        gst_segment_to_running_time(&scope->priv->segment, GST_FORMAT_TIME, ts);
-
     ++scope->priv->processed;
 
     /* sync controlled properties */
@@ -888,7 +885,7 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
     /* call class->render() vmethod */
     g_mutex_unlock(&scope->priv->config_lock);
 
-    ret = klass->render(scope, inbuf, ts, running_time, frame_duration);
+    ret = klass->render(scope, inbuf, ts, frame_duration);
     if (ret != GST_FLOW_OK) {
       goto beach;
     }

@@ -53,11 +53,10 @@ G_BEGIN_DECLS
  * Number of render slots that are used by the ring buffer.
  * 2 is the ideal size and there should be no reason to change it:
  * One slot for the gl thread to render the current frame while another slot is
- * available for queuing the next audio buffer to render. Increasing the number
- * of slots will just increase the potential for latency.
- * Note: Increasing the number of slots >2 can be done but is not fully
- * supported. GstSegments won't be handled correctly currently. See inline code
- * comments.
+ * available for queuing the next audio buffer to render.
+ *
+ * Note: Increasing the number of slots >2 is not fully supported.
+ * GstSegments won't be handled correctly currently. See inline code comments.
  *
  * Valid values:
  *  1 - Wait for previous render to complete before scheduling.
@@ -149,16 +148,6 @@ typedef struct {
    * Audio data to feed to projectM for this frame.
    */
   GstBuffer *in_audio;
-
-  /**
-   * Current pipeline latency.
-   */
-  GstClockTime latency;
-
-  /**
-   * Running time for this video frame.
-   */
-  GstClockTime running_time;
 
   // output from rendering, updated by gl thread for each frame
   // --------------------------------------------------------------
@@ -328,16 +317,6 @@ typedef struct {
    */
   GstBuffer *in_audio;
 
-  /**
-   * Current pipeline latency.
-   */
-  GstClockTime latency;
-
-  /**
-   * Running time for this video frame.
-   */
-  GstClockTime running_time;
-
 } RBQueueArgs;
 
 /**
@@ -397,14 +376,10 @@ void rb_queue_render_job_log(RBQueueArgs *args);
  * @param state Render buffer to use.
  * @param pts Frame PTS.
  * @param frame_duration Frame duration.
- * @param latency Current pipeline latency.
- * @param running_time Frame running time.
  * @return The downstream push result.
  */
 GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
-                                 GstClockTime pts, GstClockTime frame_duration,
-                                 GstClockTime latency,
-                                 GstClockTime running_time);
+                                 GstClockTime pts, GstClockTime frame_duration);
 
 /**
  * Determine if it's likely too late push a buffer, as it would likely be

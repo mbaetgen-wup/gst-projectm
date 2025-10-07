@@ -123,8 +123,7 @@ struct _GstPMAudioVisualizerClass {
    * Virtual function for rendering a frame.
    */
   GstFlowReturn (*render)(GstPMAudioVisualizer *scope, GstBuffer *audio,
-                          GstClockTime pts, GstClockTime running_time,
-                          guint64 frame_duration);
+                          GstClockTime pts, guint64 frame_duration);
 
   /**
    * Virtual function for buffer pool allocation.

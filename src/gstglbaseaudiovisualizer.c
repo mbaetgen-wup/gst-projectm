@@ -134,9 +134,10 @@ gst_gl_base_audio_visualizer_change_state(GstElement *element,
  * Renders a video frame using gl, impl for parent class
  * GstPMAudioVisualizerClass.
  */
-static GstFlowReturn gst_gl_base_audio_visualizer_parent_render(
-    GstPMAudioVisualizer *bscope, GstBuffer *audio, GstClockTime pts,
-    GstClockTime running_time, guint64 frame_duration);
+static GstFlowReturn
+gst_gl_base_audio_visualizer_parent_render(GstPMAudioVisualizer *bscope,
+                                           GstBuffer *audio, GstClockTime pts,
+                                           guint64 frame_duration);
 
 /**
  * Internal utility for resetting state on start \
@@ -515,8 +516,7 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
 
 static GstFlowReturn gst_gl_base_audio_visualizer_fill(
     GstPMAudioVisualizer *bscope, GstGLBaseAudioVisualizer *glav,
-    GstBuffer *audio, GstClockTime pts, GstClockTime running_time,
-    guint64 frame_duration) {
+    GstBuffer *audio, GstClockTime pts, guint64 frame_duration) {
 
   g_rec_mutex_lock(&glav->priv->context_lock);
   if (G_UNLIKELY(!glav->context))
@@ -531,8 +531,7 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
     g_rec_mutex_unlock(&glav->priv->context_lock);
 
     // offline rendering can be done synchronously, avoid queuing overhead
-    rb_render_blocking(&glav->priv->render_buffer, audio, pts, frame_duration,
-                       bscope->latency, running_time);
+    rb_render_blocking(&glav->priv->render_buffer, audio, pts, frame_duration);
 
     g_rec_mutex_lock(&glav->priv->context_lock);
   } else {
@@ -542,8 +541,6 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
     args.in_audio = audio;
     args.pts = pts;
     args.frame_duration = frame_duration;
-    args.latency = bscope->latency;
-    args.running_time = running_time;
 
     // limit wait based on fps factor, make sure we never wait too long in order
     // to keep in sync
@@ -635,13 +632,14 @@ gst_gl_base_audio_visualizer_parent_setup(GstPMAudioVisualizer *pmav) {
   return glav_class->setup(glav);
 }
 
-static GstFlowReturn gst_gl_base_audio_visualizer_parent_render(
-    GstPMAudioVisualizer *bscope, GstBuffer *audio, GstClockTime pts,
-    GstClockTime running_time, guint64 frame_duration) {
+static GstFlowReturn
+gst_gl_base_audio_visualizer_parent_render(GstPMAudioVisualizer *bscope,
+                                           GstBuffer *audio, GstClockTime pts,
+                                           guint64 frame_duration) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(bscope);
 
   return gst_gl_base_audio_visualizer_fill(bscope, glav, audio, pts,
-                                           running_time, frame_duration);
+                                           frame_duration);
 }
 
 static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav) {

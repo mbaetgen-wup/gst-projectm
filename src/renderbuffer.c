@@ -201,8 +201,6 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
     state->slots[i].gl_result = FALSE;
     state->slots[i].pts = GST_CLOCK_TIME_NONE;
     state->slots[i].frame_duration = 0;
-    state->slots[i].latency = GST_CLOCK_TIME_NONE;
-    state->slots[i].running_time = GST_CLOCK_TIME_NONE;
     state->slots[i].out_buf = NULL;
     state->slots[i].gl_fill_func = gl_fill_func;
     state->slots[i].in_audio = NULL;
@@ -296,8 +294,6 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args) {
   slot->gl_result = FALSE;
   slot->pts = args->pts;
   slot->frame_duration = args->frame_duration;
-  slot->latency = args->latency;
-  slot->running_time = args->running_time;
   slot->in_audio = gst_buffer_copy_deep(args->in_audio);
 
   // signal render thread that there is something to do
@@ -457,15 +453,11 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
  * @param outbuf Video buffer to send downstream (takes ownership).
  * @param pts Frame PTS.
  * @param frame_duration Frame duration.
- * @param latency Current pipeline latency.
- * @param running_time Frame running time.
  * @return TRUE if the buffer was pushed successfully.
  */
 GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
                                     GstClockTime pts,
-                                    GstClockTime frame_duration,
-                                    GstClockTime latency,
-                                    GstClockTime running_time) {
+                                    GstClockTime frame_duration) {
 
   if (gst_buffer_get_size(outbuf) == 0) {
     GST_WARNING_OBJECT(state->plugin, "Empty or invalid buffer, dropping.");
@@ -511,9 +503,8 @@ static void rb_release_slot(RBRenderBuffer *state, RBSlot *slot) {
 }
 
 GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
-                                 GstClockTime pts, GstClockTime frame_duration,
-                                 GstClockTime latency,
-                                 GstClockTime running_time) {
+                                 GstClockTime pts,
+                                 GstClockTime frame_duration) {
   // Lock and reset slot data
   g_mutex_lock(&state->slot_lock);
 
@@ -524,14 +515,12 @@ GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
   slot->pts = pts;
   slot->gl_result = FALSE;
   slot->frame_duration = frame_duration;
-  slot->latency = latency;
-  slot->running_time = running_time;
 
   // perform rendering
   rb_render_slot(state, slot);
 
-  GstFlowReturn ret = rb_handle_send_buffer(
-      state, slot->out_buf, pts, frame_duration, latency, running_time);
+  GstFlowReturn ret =
+      rb_handle_send_buffer(state, slot->out_buf, pts, frame_duration);
 
   // reset slot
   slot->in_audio = NULL;
@@ -620,8 +609,6 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     GstBuffer *audio_buffer = slot->in_audio;
     const GstClockTime frame_duration = slot->frame_duration;
     const GstClockTime pts = slot->pts;
-    const GstClockTime latency = slot->latency;
-    const GstClockTime running_time = slot->running_time;
 
     // copy results to locals vars to release the slot
     GstBuffer *outbuf = slot->out_buf;
@@ -631,8 +618,8 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     rb_release_slot(state, slot);
 
     // send out buffer downstream
-    if (rb_handle_send_buffer(state, outbuf, pts, frame_duration, latency,
-                              running_time) == GST_FLOW_OK) {
+    if (rb_handle_send_buffer(state, outbuf, pts, frame_duration) ==
+        GST_FLOW_OK) {
 
       // process rendering fps QoS in case frame was pushed
       if (state->qos_enabled) {
