@@ -65,16 +65,6 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
 #endif
 
 /**
- * Possible option to drop frames that are too late after rendering if they
- * would be dropped by a downstream sink anyway.
- * Experimental, tends to increase flicker in most cases. Disabled per default.
- */
-// #define RB_DROP_LATE_FRAMES
-#ifndef RB_DROP_LATE_FRAMES_TOLERANCE
-#define RB_DROP_LATE_FRAMES_TOLERANCE (GST_MSECOND * 8)
-#endif
-
-/**
  * How much time has to be left of the time budget for scheduling before
  * entering wait. Tolerance to account for scheduling overhead etc. to guarantee
  * a defined max run-time of the scheduling process.
@@ -203,7 +193,6 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   g_mutex_init(&state->slot_lock);
   g_cond_init(&state->slot_available_cond);
   g_cond_init(&state->render_queued_cond);
-  g_cond_init(&state->render_complete_cond);
   state->buffer_cleanup_queue = g_async_queue_new();
 
   for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
@@ -224,7 +213,6 @@ void rb_dispose_render_buffer(RBRenderBuffer *state) {
   g_async_queue_unref(state->buffer_cleanup_queue);
   g_cond_clear(&state->slot_available_cond);
   g_cond_clear(&state->render_queued_cond);
-  g_cond_clear(&state->render_complete_cond);
   g_mutex_clear(&state->slot_lock);
 }
 
@@ -314,12 +302,6 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args) {
 
   // signal render thread that there is something to do
   g_cond_signal(&state->render_queued_cond);
-
-  if (args->sync_rendering) {
-    // block until rendering completed, if requested
-    g_cond_wait(&state->render_complete_cond, &state->slot_lock);
-  }
-
   g_mutex_unlock(&state->slot_lock);
 
   RBQueueResult result;
@@ -331,7 +313,7 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args) {
   return result;
 }
 
-void rb_queue_render_job_warn(RBQueueArgs *args) {
+void rb_queue_render_job_log(RBQueueArgs *args) {
 
   RBRenderBuffer *state = args->render_buffer;
   const GstClockTime start_ts = gst_util_get_timestamp();
@@ -378,24 +360,13 @@ static GstClockTime rb_element_render_time(GstElement *element) {
   return now - base_time;
 }
 
-/**
- * Determine if it's likely too late push a buffer, as it would likely be
- * dropped by a pipeline synchronized sink.
- *
- * @param element The plugin element.
- * @param latency Pipeline latency.
- * @param running_time Current buffer running time.
- * @return TRUE in case the buffer is too late.
- */
-static gboolean rb_is_render_too_late(GstElement *element,
-                                      const GstClockTime latency,
-                                      const GstClockTime running_time) {
+gboolean rb_is_render_too_late(GstElement *element, const GstClockTime latency,
+                               const GstClockTime running_time,
+                               const GstClockTime tolerance) {
 
   if (latency == GST_CLOCK_TIME_NONE) {
     return FALSE;
   }
-
-  const GstClockTime tolerance = RB_DROP_LATE_FRAMES_TOLERANCE;
 
   const GstClockTime render_time = rb_element_render_time(element);
 
@@ -448,6 +419,132 @@ static gpointer cleanup_thread_func(gpointer user_data) {
 }
 
 /**
+ * Render one frame for the given slot.
+ *
+ * @param state Render buffer to use.
+ * @param slot Prepared slot to render.
+ *
+ * @return Render duration.
+ */
+GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
+  // measure rendering for QoS
+  GstClockTime render_start = gst_util_get_timestamp();
+
+  // Dispatch slot to GL thread
+  gst_gl_context_thread_add(state->gl_context, slot->gl_fill_func, slot);
+
+  GstClockTime render_time = gst_util_get_timestamp() - render_start;
+
+  // render took longer than the frame duration, this is a problem for
+  // real-time rendering if it happens too often
+  if (render_time > slot->frame_duration) {
+    GST_DEBUG_OBJECT(
+        state->plugin,
+        "Render GL frame took too long: %" GST_TIME_FORMAT
+        ", frame-duration: %" GST_TIME_FORMAT ", pts: %" GST_TIME_FORMAT,
+        GST_TIME_ARGS(render_time), GST_TIME_ARGS(slot->frame_duration),
+        GST_TIME_ARGS(slot->pts));
+  }
+
+  return render_time;
+}
+
+/**
+ * Send a video buffer to the source pad downstream.
+ * Buffer is checked and timestamps are populated before sending.
+ *
+ * @param state Render buffer to use.
+ * @param outbuf Video buffer to send downstream (takes ownership).
+ * @param pts Frame PTS.
+ * @param frame_duration Frame duration.
+ * @param latency Current pipeline latency.
+ * @param running_time Frame running time.
+ * @return TRUE if the buffer was pushed successfully.
+ */
+GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
+                                    GstClockTime pts,
+                                    GstClockTime frame_duration,
+                                    GstClockTime latency,
+                                    GstClockTime running_time) {
+
+  if (gst_buffer_get_size(outbuf) == 0) {
+    GST_WARNING_OBJECT(state->plugin, "Empty or invalid buffer, dropping.");
+    rb_queue_gl_buffer_cleanup(state, outbuf);
+  } else {
+
+    // populate timestamps after rendering so they can't be changed by accident
+    GST_BUFFER_PTS(outbuf) = pts;
+    GST_BUFFER_DTS(outbuf) = pts;
+    GST_BUFFER_DURATION(outbuf) = frame_duration;
+
+    // we got a rendered buffer, perform rendering loop QoS
+
+    // push buffer downstream
+    const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
+    if (ret != GST_FLOW_OK) {
+      GST_WARNING("Failed to push buffer to pad");
+    }
+    return ret;
+  }
+
+  return GST_FLOW_OK;
+}
+
+/**
+ * Reset buffer references, set slot state to RB_EMPTY and signal.
+ *
+ * @param state Render buffer to use.
+ * @param slot Slot to release.
+ */
+static void rb_release_slot(RBRenderBuffer *state, RBSlot *slot) {
+  // Lock and reset slot data
+  g_mutex_lock(&state->slot_lock);
+
+  slot->in_audio = NULL;
+  slot->state = RB_EMPTY;
+  slot->out_buf = NULL;
+  slot->gl_result = FALSE;
+
+  // let queuing know that a slot is available
+  g_cond_signal(&state->slot_available_cond);
+  g_mutex_unlock(&state->slot_lock);
+}
+
+GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
+                                 GstClockTime pts, GstClockTime frame_duration,
+                                 GstClockTime latency,
+                                 GstClockTime running_time) {
+  // Lock and reset slot data
+  g_mutex_lock(&state->slot_lock);
+
+  RBSlot *slot = &state->slots[0];
+  slot->in_audio = in_audio;
+  slot->state = RB_BUSY;
+  slot->out_buf = NULL;
+  slot->pts = pts;
+  slot->gl_result = FALSE;
+  slot->frame_duration = frame_duration;
+  slot->latency = latency;
+  slot->running_time = running_time;
+
+  // perform rendering
+  rb_render_slot(state, slot);
+
+  GstFlowReturn ret = rb_handle_send_buffer(
+      state, slot->out_buf, pts, frame_duration, latency, running_time);
+
+  // reset slot
+  slot->in_audio = NULL;
+  slot->state = RB_EMPTY;
+  slot->out_buf = NULL;
+  slot->gl_result = FALSE;
+
+  g_mutex_unlock(&state->slot_lock);
+
+  return ret;
+}
+
+/**
  * Render thread main worker function.
  *
  * @param user_data Render buffer to work on.
@@ -467,7 +564,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
     // first find a slot with data that's ready to render
     gboolean found_slot = FALSE;
-    RBSlot *slot;
+    RBSlot *slot = NULL;
     gint render_index;
     while (!found_slot) {
       render_index = (state->last_render_index + 1) % NUM_RENDER_SLOTS;
@@ -501,11 +598,10 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
     // no slot means we're not running anymore
     if (found_slot == FALSE) {
-      g_cond_signal(&state->render_complete_cond);
       break;
     }
 
-    // update iteration maker
+    // update read maker
     state->last_render_index = render_index;
 #if NUM_RENDER_SLOTS > 2
     last_pts = slot->pts;
@@ -517,93 +613,33 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
     g_mutex_unlock(&state->slot_lock);
 
-    // measure rendering for QoS
-    GstClockTime render_start = gst_util_get_timestamp();
-
-    // Dispatch slot to GL thread
-    gst_gl_context_thread_add(state->gl_context, slot->gl_fill_func, slot);
-
-    GstClockTime render_time = gst_util_get_timestamp() - render_start;
-
-    // render took longer than the frame duration, this is a problem for
-    // real-time rendering if it happens too often
-    if (render_time > slot->frame_duration) {
-      GST_DEBUG_OBJECT(
-          state->plugin,
-          "Render GL frame took too long: %" GST_TIME_FORMAT
-          ", frame-duration: %" GST_TIME_FORMAT ", pts: %" GST_TIME_FORMAT,
-          GST_TIME_ARGS(render_time), GST_TIME_ARGS(slot->frame_duration),
-          GST_TIME_ARGS(slot->pts));
-    }
+    // perform gl rendering
+    GstClockTime render_time = rb_render_slot(state, slot);
 
     // copy params to locals vars to release the slot
     GstBuffer *audio_buffer = slot->in_audio;
     const GstClockTime frame_duration = slot->frame_duration;
     const GstClockTime pts = slot->pts;
-#ifdef RB_DROP_LATE_FRAMES
     const GstClockTime latency = slot->latency;
     const GstClockTime running_time = slot->running_time;
-#endif
 
     // copy results to locals vars to release the slot
     GstBuffer *outbuf = slot->out_buf;
     const gboolean gl_result = slot->gl_result;
 
-    // Lock and reset slot data
-    g_mutex_lock(&state->slot_lock);
+    // release slot and signal
+    rb_release_slot(state, slot);
 
-    // signal render complete
-    g_cond_signal(&state->render_complete_cond);
+    // send out buffer downstream
+    if (rb_handle_send_buffer(state, outbuf, pts, frame_duration, latency,
+                              running_time) == GST_FLOW_OK) {
 
-    slot->in_audio = NULL;
-    slot->state = RB_EMPTY;
-    slot->out_buf = NULL;
-    slot->gl_result = FALSE;
-
-    // let queuing know that a slot is available
-    g_cond_signal(&state->slot_available_cond);
-    g_mutex_unlock(&state->slot_lock);
-
-    // populate timestamps after rendering so they can't be changed by accident
-    GST_BUFFER_PTS(outbuf) = pts;
-    GST_BUFFER_DTS(outbuf) = pts;
-    GST_BUFFER_DURATION(outbuf) = frame_duration;
-
-    if (gst_buffer_get_size(outbuf) == 0) {
-      GST_WARNING_OBJECT(state->plugin, "Empty or invalid buffer, dropping.");
-      rb_queue_gl_buffer_cleanup(state, outbuf);
-      outbuf = NULL;
-    } else {
-
-      // we got a rendered buffer, perform rendering loop QoS
-#ifdef RB_DROP_LATE_FRAMES
-      gboolean dropped = FALSE;
-
-      if (state->is_pipeline_realtime) {
-        dropped = rb_is_render_too_late(GST_ELEMENT(state->plugin), latency,
-                                        running_time);
-      }
-      if (!dropped) {
-#endif
-
-        // push buffer downstream
-        const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
-        if (ret != GST_FLOW_OK) {
-          GST_WARNING("Failed to push buffer to pad");
-        }
-
-#ifdef RB_DROP_LATE_FRAMES
-      } else {
-        rb_queue_gl_buffer_cleanup(state, outbuf);
-        outbuf = NULL;
-      }
-#endif
-
-      // process rendering fps QoS
+      // process rendering fps QoS in case frame was pushed
       if (state->qos_enabled) {
         rb_handle_adaptive_fps_ema(state, render_time, frame_duration);
       }
     }
+    outbuf = NULL;
 
     gst_buffer_unref(audio_buffer);
 

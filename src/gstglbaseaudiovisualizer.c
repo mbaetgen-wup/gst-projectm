@@ -56,7 +56,9 @@
  * for initializing and cleaning up OpenGL resources. The `render`
  * virtual method of the GstPMAudioVisualizer is implemented to perform OpenGL
  * rendering. The implementer provides an implementation for fill_gl_memory to
- * render directly to gl memory.
+ * render directly to gl memory. Rendering is performed blocking for
+ * offline rendering and asynchronously for real-time rendering.
+ * The plugin detects if the pipeline clock is a real-time clock.
  *
  * Typical plug-in call order for implementer-provided functions:
  * - gl_start (once)
@@ -525,36 +527,38 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
                  glav->priv->n_frames == 1))
     goto eos;
 
-  // prepare args for queuing frame rendering
-  RBQueueArgs args;
-  args.render_buffer = &glav->priv->render_buffer;
-  args.in_audio = audio;
-  args.pts = pts;
-  args.frame_duration = frame_duration;
-  args.latency = bscope->latency;
-  args.running_time = running_time;
-
   if (glav->priv->is_realtime == FALSE) {
-    // wait for each frame to complete
-    args.sync_rendering = TRUE;
+    g_rec_mutex_unlock(&glav->priv->context_lock);
 
-    // unlimited for offline rendering, frames will never be dropped by QoS.
-    args.max_wait = GST_CLOCK_TIME_NONE;
+    // offline rendering can be done synchronously, avoid queuing overhead
+    rb_render_blocking(&glav->priv->render_buffer, audio, pts, frame_duration,
+                       bscope->latency, running_time);
+
+    g_rec_mutex_lock(&glav->priv->context_lock);
   } else {
-    // fire and forget, mapping n samples per frame from upstream keeps us in
-    // sync
-    args.sync_rendering = FALSE;
+    // prepare args for queuing frame rendering
+    RBQueueArgs args;
+    args.render_buffer = &glav->priv->render_buffer;
+    args.in_audio = audio;
+    args.pts = pts;
+    args.frame_duration = frame_duration;
+    args.latency = bscope->latency;
+    args.running_time = running_time;
 
     // limit wait based on fps factor, make sure we never wait too long in order
     // to keep in sync
     args.max_wait = (GstClockTimeDiff)gst_util_uint64_scale_int(
         frame_duration, MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N,
         MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D);
-  }
 
-  // dispatch gst_gl_base_audio_visualizer_fill_gl to the gl render buffer,
-  // rendering is deferred. This may block for a while though.
-  rb_queue_render_job_warn(&args);
+    g_rec_mutex_unlock(&glav->priv->context_lock);
+
+    // dispatch gst_gl_base_audio_visualizer_fill_gl to the gl render buffer,
+    // rendering is deferred. This may block for a while though.
+    rb_queue_render_job_log(&args);
+
+    g_rec_mutex_lock(&glav->priv->context_lock);
+  }
 
   glav->priv->n_frames++;
 

@@ -3,33 +3,32 @@
  * rendering tasks from the plugin chain function. The ring buffer consists of
  * a limited number of rendering slots.
  *
+ *  For offline pipelines only:
+ *
+ * - A blocking call is used for rendering, bypasses queuing.
+ *
+ *  For real-time pipelines only:
+ *
  * The buffer provides queueing for audio buffers to be rendered to video
- * frames, supporting real-time (async) and offline (sync) rendering. It uses a
- * bound-wait-on-full approach to avoid dropping frames when rendering duration
- * exceeds the frame duration of the current fps:
+ * frames, It uses a bound-wait-on-full approach to avoid dropping frames when
+ * rendering duration exceeds the frame duration of the current fps:
  *
- * - (offline pipelines only) In case a free slot is available queue immediately
- *   and wait for rendering to complete (sync rendering).
- *
- * - (real-time pipelines only) In case a free slot is available queue
+ * - In case a free slot is available queue
  *   immediately and return (async rendering).
  *
  * - In case the next available (not rendering) slot is scheduled (end of the
  *   ring + 1):
  *
- *   - (real-time pipelines only) Wait for defined time for a slot to become
+ *   - Wait for defined time for a slot to become
  *     available, this wait may not exceed the current fps frame duration,
  *     otherwise the plugin loses audio sync and fails.
  *
- *   - (real-time pipelines only) In case the max wait deadline is met,
+ *   -  In case the max wait deadline is met,
  *     and the next buffer still hasn't been picked up, it is overridden
  *     with the current frame (evicted), meaning the previous frame is being
  *     dropped as it is too late.
  *
- *   - (offline pipelines only) Always wait until the next slot is free, and
- * wait until rendering completed (sync rendering).
- *
- *  For real-time pipelines only:
+ * ---
  *
  *  - If the render duration exceeds the fps *sometimes*, subsequent
  *    faster-than-real-time rendered frames (if any) compensate for the small
@@ -252,11 +251,6 @@ typedef struct {
   GCond slot_available_cond;
 
   /**
-   * Condition for rendering completion.
-   */
-  GCond render_complete_cond;
-
-  /**
    * Is current pipeline using a real-time clock.
    */
   gboolean qos_enabled;
@@ -320,11 +314,6 @@ typedef struct {
   GstClockTime max_wait;
 
   /**
-   * If TRUE, the queuing call will block until rendering completed.
-   */
-  gboolean sync_rendering;
-
-  /**
    * Presentation timestamp for this video frame.
    */
   GstClockTime pts;
@@ -382,7 +371,8 @@ void rb_dispose_render_buffer(RBRenderBuffer *state);
  * not possible within the given time budget.
  *
  * @param args Audio buffer and frame details for rendering. The render buffer
- * does not take ownership of the given pointer.
+ * does not take ownership of the given pointer. The given audio buffer is
+ * copied.
  */
 RBQueueResult rb_queue_render_job(RBQueueArgs *args);
 
@@ -391,13 +381,44 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args);
  * within the given max time budget. The buffer will be dropped if queuing is
  * not possible within the given time budget.
  *
- * Convenience function that also handles queuing result by warning if frames
- * are dropped.
+ * Convenience function that also handles queuing result by logging if frames
+ * are dropped (DEBUG level).
  *
  * @param args Audio buffer and frame details for rendering. The render buffer
- * does not take ownership of the given pointer.
+ * does not take ownership of the given pointer. The given audio buffer is
+ * copied.
  */
-void rb_queue_render_job_warn(RBQueueArgs *args);
+void rb_queue_render_job_log(RBQueueArgs *args);
+
+/**
+ * Render one frame synchronously. Using synchronous rendering is exclusive,
+ * queuing may not be used with the same render buffer at the same time.
+ *
+ * @param state Render buffer to use.
+ * @param pts Frame PTS.
+ * @param frame_duration Frame duration.
+ * @param latency Current pipeline latency.
+ * @param running_time Frame running time.
+ * @return The downstream push result.
+ */
+GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
+                                 GstClockTime pts, GstClockTime frame_duration,
+                                 GstClockTime latency,
+                                 GstClockTime running_time);
+
+/**
+ * Determine if it's likely too late push a buffer, as it would likely be
+ * dropped by a pipeline synchronized sink.
+ *
+ * @param element The plugin element.
+ * @param latency Pipeline latency.
+ * @param running_time Current buffer running time.
+ * @param tolerance Tolerance to account for scheduling overhead.
+ * @return TRUE in case the buffer is too late.
+ */
+static gboolean rb_is_render_too_late(GstElement *element, GstClockTime latency,
+                                      GstClockTime running_time,
+                                      GstClockTime tolerance);
 
 /**
  * Start render loop.
