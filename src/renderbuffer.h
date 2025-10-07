@@ -10,7 +10,7 @@
  *  For real-time pipelines only:
  *
  * The buffer provides queueing for audio buffers to be rendered to video
- * frames, It uses a bound-wait-on-full approach to avoid dropping frames when
+ * frames. It uses a bound-wait-on-full approach to avoid dropping frames when
  * rendering duration exceeds the frame duration of the current fps:
  *
  * - In case a free slot is available queue
@@ -23,7 +23,7 @@
  *     available, this wait may not exceed the current fps frame duration,
  *     otherwise the plugin loses audio sync and fails.
  *
- *   -  In case the max wait deadline is met,
+ *   - In case the max wait deadline is met,
  *     and the next buffer still hasn't been picked up, it is overridden
  *     with the current frame (evicted), meaning the previous frame is being
  *     dropped as it is too late.

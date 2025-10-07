@@ -42,10 +42,6 @@
  *
  * The code has been modified to improve compatibility with projectM and OpenGL.
  *
- * - New apis for implementer-provided memory allocation and video frame
- * buffer mapping. Used by gl plugins for mapping video frames directly to gl
- * memory.
- *
  * - Main memory based video frame buffers have been removed.
  *
  * - Cpu based transition shaders have been removed.
@@ -62,7 +58,7 @@
  *
  * - Segment event propagation.
  *
- * - All memory management and rendering is implementer-provided.
+ * - Memory management and rendering is implementer-provided.
  *
  *  Typical plug-in call order for implementer-provided functions:
  *  - decide_allocation (once)
