@@ -543,7 +543,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
   RBRenderBuffer *state = (RBRenderBuffer *)user_data;
 #if NUM_RENDER_SLOTS > 2
-  GstClockTime last_pts = 0;
+  GstClockTime last_pts = GST_CLOCK_TIME_NONE;
 #endif
   // slot modifications are locked
   g_mutex_lock(&state->slot_lock);
@@ -572,7 +572,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
           // check if next frame is already outdated, may happen if write
           // pointer jumps over the read pointer.
-          && (last_pts == 0 || slot->pts > last_pts)
+          && (last_pts == GST_CLOCK_TIME_NONE || slot->pts > last_pts)
 #endif
       ) {
         found_slot = TRUE;
