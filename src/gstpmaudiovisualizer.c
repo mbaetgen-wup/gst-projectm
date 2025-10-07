@@ -76,10 +76,10 @@
 
 #include <string.h>
 
+#include <gst/pbutils/pbutils-enumtypes.h>
 #include <gst/video/video.h>
 
 #include "gstpmaudiovisualizer.h"
-#include <gst/pbutils/pbutils-enumtypes.h>
 
 GST_DEBUG_CATEGORY_STATIC(pm_audio_visualizer_debug);
 #define GST_CAT_DEFAULT (pm_audio_visualizer_debug)

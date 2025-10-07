@@ -3,10 +3,10 @@
 #include "config.h"
 #endif
 
+#include <gst/gst.h>
+
 #include "gstprojectm.h"
 #include "gstprojectmconfig.h"
-
-#include <gst/gst.h>
 
 /*
  * This unit registers all gst elements from this plugin library to make them

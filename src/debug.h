@@ -1,7 +1,6 @@
 #ifndef __GST_PROJECTM_DEBUG_H__
 #define __GST_PROJECTM_DEBUG_H__
 
-#include <glib.h>
 #include <gst/gl/gl.h>
 
 G_BEGIN_DECLS

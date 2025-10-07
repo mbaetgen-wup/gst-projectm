@@ -481,6 +481,11 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 #if NUM_RENDER_SLOTS > 2
           // wontfix: segment events would need to be handled for this check to
           // work right otherwise last_pts is not reset when the pts changes.
+          // if this is ever desired, each queued frame should have an
+          // incrementing id field to use for this check
+
+          // check if next frame is already outdated, may happen if write
+          // pointer jumps over the read pointer.
           && (last_pts == 0 || slot->pts > last_pts)
 #endif
       ) {

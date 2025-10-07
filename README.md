@@ -259,7 +259,7 @@ gst-inspect projectm
 
 ### ⏱️ Timing and Synchronization
 
-The plugin synchronizes rendering to the GStreamer pipeline clock using **audio PTS (presentation timestamp) as the leading reference**.
+The plugin synchronizes rendering to the GStreamer pipeline clock using **audio presentation timestamp (PTS) as the leading reference**.
 
 Pipeline caps control the desired video framerate for rendering. The render loop is **push-based** to conform with 
 GStreamer's pipeline timing concept, and to enable faster-than-real-time rendering.
@@ -268,20 +268,21 @@ A **fixed number of audio samples is consumed per video frame**.
 **Example:** `735 samples per frame at 44.1 kHz = ~60 FPS.`
  
 
-In real-time pipelines, frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
-pipeline caps fps.
+Real-time pipelines only: Frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
+pipeline caps FPS.
 
 Video frame PTS offset is derived from the **first audio buffer PTS** or **segment event** plus accumulated samples to align with audio timing.
 
 
-| Timing Source                    | Source             | Applies to clock | Purpose                                                                                    |
-|----------------------------------|--------------------|------------------|--------------------------------------------------------------------------------------------|
-| Audio Timestamps                 | Audio Input        | Always           | Determine video timing and sync.                                                           |
-| Sample Rate / Pipeline FPS       | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                          |
-| Segment Info                     | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                           |
-| QoS Feedback                     | QoS Event          | Real-time        | Skips outdated frames to reduce latency.                                                   |
-| Render Frame Drop                | Render Loop        | Real-time        | Drop frames that cannot be rendered in time.                                               |
-| Exponential Moving Average (EMA) | Render Loop        | Real-time        | Adjust plugin target fps when frame render time exceeds real-time budget most of the time. |
+| Timing Source                    | Origin             | Applies to clock | Purpose                                                                                           |
+|----------------------------------|--------------------|------------------|---------------------------------------------------------------------------------------------------|
+| Audio Timestamps                 | Audio Input        | Always           | Determine video timing and sync.                                                                  |
+| Sample Rate / Pipeline FPS       | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                                 |
+| Segment Info                     | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                                  |
+| QoS Feedback                     | QoS Event          | Real-time        | Skips outdated frames to reduce latency.                                                          |
+| Render Frame Drop                | Render Loop        | Real-time        | Drop frames that cannot be rendered in time.                                                      |
+| Exponential Moving Average (EMA) | Render Loop        | Real-time        | Adjust plugin target FPS in case frame render time exceeds the real-time budget most of the time. |
+| Latency Event                    | Render Loop        | Real-time        | Inform upstream of latency changes in case of adaptive FPS changes (EMA).                         |
 
 
 ---

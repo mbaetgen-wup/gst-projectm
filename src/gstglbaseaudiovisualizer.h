@@ -32,9 +32,9 @@
 #ifndef __GST_GL_BASE_AUDIO_VISUALIZER_H__
 #define __GST_GL_BASE_AUDIO_VISUALIZER_H__
 
-#include "gstpmaudiovisualizer.h"
 #include <gst/gl/gstgl_fwd.h>
-#include <stdint.h>
+
+#include "gstpmaudiovisualizer.h"
 
 typedef struct _GstGLBaseAudioVisualizer GstGLBaseAudioVisualizer;
 typedef struct _GstGLBaseAudioVisualizerClass GstGLBaseAudioVisualizerClass;

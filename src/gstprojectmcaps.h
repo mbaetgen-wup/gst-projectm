@@ -3,8 +3,6 @@
 
 #include <glib.h>
 
-#include "gstprojectm.h"
-
 G_BEGIN_DECLS
 
 /**

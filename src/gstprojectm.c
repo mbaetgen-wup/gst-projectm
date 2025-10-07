@@ -6,10 +6,9 @@
 #include <GL/glew.h>
 #endif
 
-#include "gstprojectm.h"
-
-#include <gst/gl/gstglfuncs.h>
 #include <gst/gst.h>
+
+#include "gstprojectm.h"
 
 #include "debug.h"
 #include "gstglbaseaudiovisualizer.h"

@@ -3,14 +3,12 @@
 #include "config.h"
 #endif
 
-#include "gstprojectmbase.h"
-
-#include "gstprojectmconfig.h"
+#include <gst/gl/gstglframebuffer.h>
 
 #include "debug.h"
 #include "gstglbaseaudiovisualizer.h"
-
-#include <gst/gl/gstglframebuffer.h>
+#include "gstprojectmbase.h"
+#include "gstprojectmconfig.h"
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_base_debug);
 #define GST_CAT_DEFAULT gst_projectm_base_debug
@@ -105,6 +103,7 @@ static void gst_projectm_base_handle_preset_change(bool is_hard_cut,
 
   if (gst_debug_category_get_threshold(gst_projectm_base_debug) >=
       GST_LEVEL_INFO) {
+
     char *name =
         projectm_playlist_item((projectm_playlist_handle)user_data, index);
 

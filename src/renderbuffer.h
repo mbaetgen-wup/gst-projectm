@@ -1,14 +1,18 @@
 /*
- * A ring buffer based render buffer to allow async offloading of
+ * A ring buffer based render buffer to allow offloading of
  * rendering tasks from the plugin chain function. The ring buffer consists of
  * a limited number of rendering slots.
  *
  * The buffer provides queueing for audio buffers to be rendered to video
- * frames, supporting real-time and offline rendering. It uses a
+ * frames, supporting real-time (async) and offline (sync) rendering. It uses a
  * bound-wait-on-full approach to avoid dropping frames when rendering duration
  * exceeds the frame duration of the current fps:
  *
- * - In case a free slot is available queue immediately and return.
+ * - (offline pipelines only) In case a free slot is available queue immediately
+ *   and wait for rendering to complete (sync rendering).
+ *
+ * - (real-time pipelines only) In case a free slot is available queue
+ *   immediately and return (async rendering).
  *
  * - In case the next available (not rendering) slot is scheduled (end of the
  *   ring + 1):
@@ -22,7 +26,8 @@
  *     with the current frame (evicted), meaning the previous frame is being
  *     dropped as it is too late.
  *
- *   - (offline pipelines only) Always wait until the next slot is free.
+ *   - (offline pipelines only) Always wait until the next slot is free, and
+ * wait until rendering completed (sync rendering).
  *
  *  For real-time pipelines only:
  *
@@ -32,7 +37,8 @@
  *    sink will re-sync with the pipeline clock.
  *
  *  - If the render duration exceeds the fps *most of the time*, an Exponential
- *    Moving Average based algorithm instructs the plugin to reduce fps.
+ *    Moving Average (EMA) based algorithm instructs the plugin to reduce fps.
+ *    EMA will also recover fps when render performance increases again.
  */
 
 #ifndef __RENDERBUFFER_H__
@@ -48,9 +54,11 @@ G_BEGIN_DECLS
  * Number of render slots that are used by the ring buffer.
  * 2 is the ideal size and there should be no reason to change it:
  * One slot for the gl thread to render the current frame while another slot is
- * available for queuing the next audio buffer to render.
- * Note: GstSegments won't be handled correctly currently if the number of slots
- * is increased.
+ * available for queuing the next audio buffer to render. Increasing the number
+ * of slots will just increase the potential for latency.
+ * Note: Increasing the number of slots >2 can be done but is not fully
+ * supported. GstSegments won't be handled correctly currently. See inline code
+ * comments.
  *
  * Valid values:
  *  1 - Wait for previous render to complete before scheduling.
@@ -418,10 +426,11 @@ void rb_set_caps_frame_duration(RBRenderBuffer *state,
                                 GstClockTime caps_frame_duration);
 
 /**
- * Update clock source type for the pipeline. Thread safe.
+ * Controls if real-time QoS is enabled. Thread safe.
+ * Should be enabled if the pipeline is using a real-time clock.
  *
  * @param state Render buffer to update.
- * @param is_qos_enabled TRUE if the pipeline is using a real-time clock.
+ * @param is_qos_enabled TRUE real-time QoS is enabled.
  */
 void rb_set_qos_enabled(RBRenderBuffer *state, gboolean is_qos_enabled);
 
