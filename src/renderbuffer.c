@@ -179,7 +179,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   state->gl_context = NULL;
   state->src_pad = NULL;
   state->render_thread = NULL;
-  state->running = FALSE;
+  g_atomic_int_set(&state->running, FALSE);
 
   state->qos_enabled = is_qos_enabled;
   state->caps_frame_duration = caps_frame_duration;
@@ -402,7 +402,8 @@ static void gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
 static gpointer cleanup_thread_func(gpointer user_data) {
 
   const RBRenderBuffer *state = (RBRenderBuffer *)user_data;
-  while (state->running) {
+  // consume gl buffers to dispatch to gl thread for cleanup
+  while (g_atomic_int_get(&state->running)) {
 
     gpointer item = g_async_queue_pop(state->buffer_cleanup_queue);
 
@@ -468,8 +469,6 @@ GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
     GST_BUFFER_PTS(outbuf) = pts;
     GST_BUFFER_DTS(outbuf) = pts;
     GST_BUFFER_DURATION(outbuf) = frame_duration;
-
-    // we got a rendered buffer, perform rendering loop QoS
 
     // push buffer downstream
     const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
@@ -546,15 +545,17 @@ static gpointer rb_render_thread_func(gpointer user_data) {
   GstClockTime last_pts = GST_CLOCK_TIME_NONE;
 #endif
   // slot modifications are locked
-  g_mutex_lock(&state->slot_lock);
 
   // start working on rendering frames until we shut down
-  while (state->running) {
+  while (g_atomic_int_get(&state->running)) {
 
     // first find a slot with data that's ready to render
     gboolean found_slot = FALSE;
     RBSlot *slot = NULL;
     gint render_index;
+
+    g_mutex_lock(&state->slot_lock);
+
     while (!found_slot) {
       render_index = (state->last_render_index + 1) % NUM_RENDER_SLOTS;
 
@@ -579,7 +580,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
       } else {
         // no data is ready, wait for a new audio buffer being pushed
         g_cond_wait(&state->render_queued_cond, &state->slot_lock);
-        if (state->running == FALSE) {
+        if (g_atomic_int_get(&state->running) == FALSE) {
           break;
         }
       }
@@ -587,6 +588,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
     // no slot means we're not running anymore
     if (found_slot == FALSE) {
+      g_mutex_unlock(&state->slot_lock);
       break;
     }
 
@@ -635,11 +637,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
           state->plugin,
           "Failed to render buffer, gl rendering returned error");
     }
-
-    g_mutex_lock(&state->slot_lock);
   }
-
-  g_mutex_unlock(&state->slot_lock);
 
   return NULL;
 }
@@ -648,7 +646,7 @@ void rb_start_render_thread(RBRenderBuffer *state, GstGLContext *gl_context,
                             GstPad *src_pad) {
   state->gl_context = gl_context;
   state->src_pad = src_pad;
-  state->running = TRUE;
+  g_atomic_int_set(&state->running, TRUE);
   state->render_thread =
       g_thread_new("rb-render-thread", rb_render_thread_func, state);
   state->cleanup_thread =
@@ -660,7 +658,7 @@ void rb_start_render_thread(RBRenderBuffer *state, GstGLContext *gl_context,
 void rb_stop_render_thread(RBRenderBuffer *state) {
 
   g_mutex_lock(&state->slot_lock);
-  state->running = FALSE;
+  g_atomic_int_set(&state->running, FALSE);
 
   g_cond_broadcast(&state->render_queued_cond);
   g_mutex_unlock(&state->slot_lock);

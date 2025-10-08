@@ -220,14 +220,16 @@ typedef struct {
    */
   GMutex slot_lock;
 
-  // concurrent access, protected by slot_lock
+  // concurrent access, g_atomic
   // --------------------------------------------------------------
 
   /**
-   * Threads currently running.
+   * TRUE if render thread is currently running.
    */
   gboolean running;
 
+  // concurrent access, protected by slot_lock
+  // --------------------------------------------------------------
   /**
    * Condition to wait for a buffer to queued for rendering.
    */

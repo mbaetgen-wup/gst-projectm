@@ -479,19 +479,16 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
   // Check for GL sync meta
   GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
 
-  if (sync_meta) {
-    // wait until GPU is done using this buffer should not be needed
-    // gst_gl_sync_meta_wait(sync_meta, glav->context);
-  }
-
-  // GstClockTime after_prepare = gst_util_get_timestamp();
+  // if (sync_meta) {
+  //    wait until GPU is done using this buffer should not be needed
+  //    gst_gl_sync_meta_wait(sync_meta, glav->context);
+  // }
 
   // map output video frame to buffer outbuf with gl flags
   gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
                       GST_MAP_WRITE | GST_MAP_GL |
                           GST_VIDEO_FRAME_MAP_FLAG_NO_REF);
 
-  // GstClockTime after_map = gst_util_get_timestamp();
   GstAVRenderParams ds_rd;
   ds_rd.in_audio = render_slot->in_audio;
   ds_rd.mem = GST_GL_MEMORY_CAST(gst_buffer_peek_memory(out_buf, 0));
@@ -510,6 +507,7 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
     gst_gl_sync_meta_set_sync_point(sync_meta, glav->context);
 
   render_slot->out_buf = out_buf;
+  // ownership transferred
   out_buf = NULL;
 }
 
