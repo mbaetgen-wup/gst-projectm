@@ -953,7 +953,7 @@ static gboolean gst_pm_audio_visualizer_src_event(GstPad *pad,
       scope->priv->proportion = proportion;
       if (diff > 0) {
         /* we're late, this is a good estimate for next displayable
-         * frame (see part-qos.txt) */
+         * frame (see part-qos.txt) (skip all frames until this time) */
         scope->priv->earliest_time = timestamp + MIN(diff * 2, GST_SECOND * 3) +
                                      scope->req_frame_duration;
       } else {
@@ -1066,8 +1066,8 @@ static void gst_pm_audio_visualizer_send_latency_if_needed_unlocked(
     scope->priv->last_reported_latency = latency;
     g_mutex_unlock(&scope->priv->config_lock);
     gst_pad_push_event(scope->priv->sinkpad, gst_event_new_latency(latency));
-    GST_INFO_OBJECT(scope, "Sent latency event to sink pad: %" GST_TIME_FORMAT,
-                    GST_TIME_ARGS(latency));
+    GST_DEBUG_OBJECT(scope, "Sent latency event to sink pad: %" GST_TIME_FORMAT,
+                     GST_TIME_ARGS(latency));
     g_mutex_lock(&scope->priv->config_lock);
   }
 }

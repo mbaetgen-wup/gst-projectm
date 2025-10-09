@@ -99,14 +99,17 @@ struct _GstPMAudioVisualizer {
 /**
  * GstPMAudioVisualizerClass:
  * @decide_allocation: buffer pool allocation
- * @prepare_output_buffer: allocate a buffer for rendering a frame.
- * @map_output_buffer: map video frame to memory buffer.
  * @render: render a frame from an audio buffer.
- * @setup: called whenever the format changes.
+ * @setup: Called whenever the format changes, and sink and src caps are
+ * configured.
+ * @change_state: Cascades gst change state to the implementor. Parent is
+ * processed first.
+ * @segment_change: Cascades gst segment events to the implementor. Parent is
+ * processed first.
  *
  * Base class for audio visualizers, derived from gstreamer
- * GstAudioVisualizerClass. This plugin handles rendering video frames with a
- * fixed framerate from audio input samples.
+ * GstAudioVisualizerClass. This plugin consumes n audio input samples for each
+ * output video frame to keep audio and video in-sync.
  */
 struct _GstPMAudioVisualizerClass {
   /*< private >*/
@@ -131,13 +134,13 @@ struct _GstPMAudioVisualizerClass {
   gboolean (*decide_allocation)(GstPMAudioVisualizer *scope, GstQuery *query);
 
   /**
-   * Virtual function to allow overridden change_state, cascading to GstElement.
+   * Virtual function to allow implementor to receive change_state events.
    */
   GstStateChangeReturn (*change_state)(GstElement *element,
                                        GstStateChange transition);
 
   /**
-   * Virtual function to allow receiving segment change events.
+   * Virtual function allow implementor to receive segment change events.
    */
   void (*segment_change)(GstPMAudioVisualizer *scope, GstSegment *segment);
 };

@@ -77,5 +77,3 @@ target_link_libraries(gstprojectm
         ${GLIB2_LIBRARIES}
         ${GLIB2_GOBJECT_LIBRARIES}
 )
-
-add_subdirectory(example)
