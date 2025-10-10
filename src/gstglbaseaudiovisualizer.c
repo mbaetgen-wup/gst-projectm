@@ -403,6 +403,34 @@ static void gst_gl_base_audio_visualizer_set_context(GstElement *element,
   GST_ELEMENT_CLASS(parent_class)->set_context(element, context);
 }
 
+/**
+ * Find the pipeline and determine if it is live.
+ *
+ * @param element Plugin element.
+ *
+ * @return TRUE if the pipeline is live.
+ */
+static gboolean is_pipeline_live(GstElement *element) {
+  GstPipeline *pipeline = NULL;
+  gboolean is_live = FALSE;
+
+  GstObject *parent = GST_OBJECT(element);
+  while (parent && !GST_IS_PIPELINE(parent)) {
+    GstObject *next = gst_object_get_parent(parent);
+    if (parent != GST_OBJECT(element))
+      gst_object_unref(parent);
+    parent = next;
+  }
+
+  if (parent && GST_IS_PIPELINE(parent)) {
+    pipeline = GST_PIPELINE(parent);
+    is_live = gst_pipeline_is_live(pipeline);
+    gst_object_unref(parent);
+  }
+
+  return is_live;
+}
+
 static gboolean
 gst_gl_base_audio_visualizer_default_gl_start(GstGLBaseAudioVisualizer *glav) {
   return TRUE;
@@ -436,6 +464,16 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
   GstClockTime caps_frame_duration =
       gst_util_uint64_scale_int(GST_SECOND, GST_VIDEO_INFO_FPS_D(&pmav->vinfo),
                                 GST_VIDEO_INFO_FPS_N(&pmav->vinfo));
+
+  // determine if we're using a real-time pipeline
+  if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
+    glav->priv->is_realtime = FALSE;
+  } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
+    glav->priv->is_realtime = TRUE;
+  } else {
+    // auto detect
+    glav->priv->is_realtime = is_pipeline_live(GST_ELEMENT(data));
+  }
 
   // render loop QoS is disabled for offline rendering
   rb_init_render_buffer(&glav->priv->render_buffer, GST_OBJECT(glav),
@@ -870,40 +908,23 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
   return TRUE;
 }
 
-/**
- * Find pipeline clock and determine if it is a real-time clock.
- *
- * @param element Plugin element.
- *
- * @return TRUE if the pipeline clock is a real-time (system) clock.
- */
-static gboolean is_pipeline_realtime(GstElement *element) {
-  GstClock *clock = NULL;
-  gboolean is_realtime = FALSE;
+static GstPipeline *get_pipeline(GstElement *element) {
+  GstObject *parent = GST_OBJECT(element);
 
-  // first check element's own clock, then start climbing the hierarchy
-  clock = gst_element_get_clock(element);
-  if (!clock) {
-    // traverse parents to find the pipeline and ask it for its clock
-    GstObject *parent = gst_object_get_parent(GST_OBJECT(element));
-    while (parent && !GST_IS_PIPELINE(parent)) {
-      GstObject *next_parent = gst_object_get_parent(parent);
+  while (parent) {
+    if (GST_IS_PIPELINE(parent))
+      return GST_PIPELINE(parent);
+
+    GstObject *next = gst_object_get_parent(parent);
+
+    // we increase ref with get_parent, so unref previous level
+    if (parent != GST_OBJECT(element))
       gst_object_unref(parent);
-      parent = next_parent;
-    }
-    if (parent && GST_IS_PIPELINE(parent)) {
-      GstPipeline *pipeline = GST_PIPELINE(parent);
-      clock = gst_pipeline_get_clock(pipeline);
-      gst_object_unref(parent);
-    }
+
+    parent = next;
   }
 
-  if (clock) {
-    is_realtime = GST_IS_SYSTEM_CLOCK(clock);
-    gst_object_unref(clock);
-  }
-
-  return is_realtime;
+  return NULL; // no pipeline found
 }
 
 static GstStateChangeReturn
@@ -922,20 +943,6 @@ gst_gl_base_audio_visualizer_change_state(GstElement *element,
     g_rec_mutex_lock(&glav->priv->context_lock);
     gst_clear_object(&glav->priv->other_context);
     gst_clear_object(&glav->display);
-    g_rec_mutex_unlock(&glav->priv->context_lock);
-    break;
-
-  case GST_STATE_CHANGE_READY_TO_PAUSED:
-    g_rec_mutex_lock(&glav->priv->context_lock);
-    // determine if we're using a real-time pipeline
-    if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
-      glav->priv->is_realtime = FALSE;
-    } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
-      glav->priv->is_realtime = TRUE;
-    } else {
-      // auto detect
-      glav->priv->is_realtime = is_pipeline_realtime(element);
-    }
     g_rec_mutex_unlock(&glav->priv->context_lock);
     break;
 

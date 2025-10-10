@@ -255,9 +255,11 @@ void gst_projectm_base_set_property(GObject *object,
 
   switch (property_id) {
   case PROP_PRESET_PATH:
+    g_free(settings->preset_path);
     settings->preset_path = g_strdup(g_value_get_string(value));
     break;
   case PROP_TEXTURE_DIR_PATH:
+    g_free(settings->texture_dir_path);
     settings->texture_dir_path = g_strdup(g_value_get_string(value));
     break;
   case PROP_BEAT_SENSITIVITY:
@@ -321,6 +323,7 @@ void gst_projectm_base_set_property(GObject *object,
     }
     break;
   case PROP_IS_LIVE:
+    g_free(settings->is_live);
     settings->is_live = g_strdup(g_value_get_string(value));
     g_object_set(G_OBJECT(glav), "is-live", settings->is_live, NULL);
     break;
@@ -421,7 +424,7 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
   settings->shuffle_presets = DEFAULT_SHUFFLE_PRESETS;
   settings->min_fps_d = DEFAULT_MIN_FPS_D;
   settings->min_fps_n = DEFAULT_MIN_FPS_N;
-  settings->is_live = DEFAULT_IS_LIVE;
+  settings->is_live = strdup(DEFAULT_IS_LIVE);
 
   const gchar *meshSizeStr = DEFAULT_MESH_SIZE;
   gint width, height;
@@ -709,8 +712,8 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
       g_param_spec_string(
           "is-live", "is live",
           "Specifies if the plugin renders in real-time or as fast as possible "
-          "(offline). This setting is auto-detected and does not need to be "
-          "specified, but can be specified for cases where auto-detection is "
+          "(offline). This setting is auto-detected for live pipelines, "
+          "but can also be specified if auto-detection is "
           "not appropriate. Possible values are \"auto\", \"true\", \"false\". "
           "Default is \"auto\".",
           DEFAULT_IS_LIVE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
