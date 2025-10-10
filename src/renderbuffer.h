@@ -206,6 +206,18 @@ typedef struct {
   GThread *cleanup_thread;
 
   /**
+   * Thread for pushing gl buffers downstream.
+   * Used for real-time, pushing needs to be scheduled to be synchronized with
+   * the pipeline clock.
+   */
+  GThread *push_thread;
+
+  /**
+   * Queue to schedule gl buffers for pushing.
+   */
+  GAsyncQueue *buffer_push_queue;
+
+  /**
    * Queue to dispose of dropped gl buffers.
    */
   GAsyncQueue *buffer_cleanup_queue;
@@ -241,9 +253,14 @@ typedef struct {
   GCond slot_available_cond;
 
   /**
-   * Is current pipeline using a real-time clock.
+   * Switch for real-time (render loop) QoS.
    */
   gboolean qos_enabled;
+
+  /**
+   * Is current pipeline using a real-time clock.
+   */
+  gboolean is_realtime;
 
   /**
    * Pipeline negotiated caps fps as frame duration.
@@ -336,7 +353,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
                            RBAdjustFpsFunc adjust_fps_func,
                            GstClockTime max_frame_duration,
                            GstClockTime caps_frame_duration,
-                           gboolean is_qos_enabled);
+                           gboolean is_qos_enabled, gboolean is_realtime);
 
 /**
  * Release resources for the given render buffer.
@@ -354,7 +371,7 @@ void rb_dispose_render_buffer(RBRenderBuffer *state);
  * does not take ownership of the given pointer. The given audio buffer is
  * copied.
  */
-RBQueueResult rb_queue_render_job(RBQueueArgs *args);
+RBQueueResult rb_queue_render_task(RBQueueArgs *args);
 
 /**
  * Queue an audio buffer for rendering. The queuing is guaranteed to return
@@ -368,7 +385,7 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args);
  * does not take ownership of the given pointer. The given audio buffer is
  * copied.
  */
-void rb_queue_render_job_log(RBQueueArgs *args);
+void rb_queue_render_task_log(RBQueueArgs *args);
 
 /**
  * Render one frame synchronously. Using synchronous rendering is exclusive,
@@ -403,15 +420,14 @@ static gboolean rb_is_render_too_late(GstElement *element, GstClockTime latency,
  * @param gl_context GL context to use for rendering.
  * @param src_pad Source pad to push video buffers to.
  */
-void rb_start_render_thread(RBRenderBuffer *state, GstGLContext *gl_context,
-                            GstPad *src_pad);
+void rb_start(RBRenderBuffer *state, GstGLContext *gl_context, GstPad *src_pad);
 
 /**
  * Stop render loop. Active threads will be joined before returning.
  *
  * @param state Render buffer to use.
  */
-void rb_stop_render_thread(RBRenderBuffer *state);
+void rb_stop(RBRenderBuffer *state);
 
 /**
  * Update caps as they get negotiated by the pipeline. Thread safe.
@@ -421,15 +437,6 @@ void rb_stop_render_thread(RBRenderBuffer *state);
  */
 void rb_set_caps_frame_duration(RBRenderBuffer *state,
                                 GstClockTime caps_frame_duration);
-
-/**
- * Controls if real-time QoS is enabled. Thread safe.
- * Should be enabled if the pipeline is using a real-time clock.
- *
- * @param state Render buffer to update.
- * @param is_qos_enabled TRUE real-time QoS is enabled.
- */
-void rb_set_qos_enabled(RBRenderBuffer *state, gboolean is_qos_enabled);
 
 G_END_DECLS
 

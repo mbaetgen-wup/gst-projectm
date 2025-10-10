@@ -81,6 +81,7 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
 
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
+#define DEFAULT_IS_LIVE "auto"
 
 struct _GstGLBaseAudioVisualizerPrivate {
   GstGLContext *other_context;
@@ -96,7 +97,7 @@ struct _GstGLBaseAudioVisualizerPrivate {
 };
 
 /* Properties */
-enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D };
+enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D, PROP_IS_LIVE };
 
 #define gst_gl_base_audio_visualizer_parent_class parent_class
 G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
@@ -252,6 +253,15 @@ gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
                        "Specifies the denominator for the min fps (EMA)", 1,
                        1000, DEFAULT_MIN_FPS_D,
                        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property(
+      gobject_class, PROP_IS_LIVE,
+      g_param_spec_string("is-live", "Is Live",
+                          "Specifies if this element renders in real-time "
+                          "(true) or as fast as possible for offline rendering "
+                          "(false) or to auto-detect pipeline clock (auto)",
+                          DEFAULT_IS_LIVE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 /**
@@ -277,6 +287,7 @@ static void gst_gl_base_audio_visualizer_init(GstGLBaseAudioVisualizer *glav) {
   glav->priv = gst_gl_base_audio_visualizer_get_instance_private(glav);
   glav->priv->gl_started = FALSE;
   glav->priv->fbo = NULL;
+  glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_AUTO;
   glav->priv->is_realtime = FALSE;
   glav->context = NULL;
 
@@ -313,6 +324,17 @@ static void gst_gl_base_audio_visualizer_set_property(GObject *object,
     glav->min_fps_d = g_value_get_int(value);
     break;
 
+  case PROP_IS_LIVE:
+    const char *str = g_value_get_string(value);
+    if (strcasecmp("true", str) == 0) {
+      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_REALTIME;
+    } else if (strcasecmp("false", str) == 0) {
+      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE;
+    } else {
+      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_AUTO;
+    }
+    break;
+
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
     break;
@@ -333,6 +355,16 @@ static void gst_gl_base_audio_visualizer_get_property(GObject *object,
 
   case PROP_MIN_FPS_D:
     g_value_set_int(value, glav->min_fps_d);
+    break;
+
+  case PROP_IS_LIVE:
+    if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
+      g_value_set_string(value, "true");
+    } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
+      g_value_set_string(value, "false");
+    } else {
+      g_value_set_string(value, "auto");
+    }
     break;
 
   default:
@@ -405,17 +437,18 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
       gst_util_uint64_scale_int(GST_SECOND, GST_VIDEO_INFO_FPS_D(&pmav->vinfo),
                                 GST_VIDEO_INFO_FPS_N(&pmav->vinfo));
 
+  // render loop QoS is disabled for offline rendering
   rb_init_render_buffer(&glav->priv->render_buffer, GST_OBJECT(glav),
                         gst_gl_base_audio_visualizer_fill_gl,
                         adjust_fps_callback, max_frame_duration,
-                        caps_frame_duration, glav->priv->is_realtime);
+                        caps_frame_duration, glav->priv->is_realtime,
+                        glav->priv->is_realtime);
 
   // cascade gl start to implementor
   glav->priv->gl_started = glav_class->gl_start(glav);
 
   // get gl rendering going
-  rb_start_render_thread(&glav->priv->render_buffer, glav->context,
-                         pmav->srcpad);
+  rb_start(&glav->priv->render_buffer, glav->context, pmav->srcpad);
 }
 
 static void
@@ -432,7 +465,7 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
                              GST_OBJECT_NAME(glav));
 
   // stop gl rendering first
-  rb_stop_render_thread(&glav->priv->render_buffer);
+  rb_stop(&glav->priv->render_buffer);
 
   // clean up implementor
   if (glav->priv->gl_started) {
@@ -549,7 +582,7 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
 
     // dispatch gst_gl_base_audio_visualizer_fill_gl to the gl render buffer,
     // rendering is deferred. This may block for a while though.
-    rb_queue_render_job_log(&args);
+    rb_queue_render_task_log(&args);
 
     g_rec_mutex_lock(&glav->priv->context_lock);
   }
@@ -574,55 +607,26 @@ eos: {
 }
 }
 
-/**
- * Find out if the pipeline is using a real-time clock.
- *
- * @param element GST element
- * @return TRUE in case the element uses a system clock.
- */
-static gboolean is_pipeline_realtime(GstElement *element) {
-  GstClock *clock = gst_element_get_clock(element);
-  gboolean is_realtime = FALSE;
-
-  if (clock) {
-    // Compare to the system clock (used for real-time playback)
-    is_realtime = GST_IS_SYSTEM_CLOCK(clock);
-    gst_object_unref(clock);
-  }
-
-  return is_realtime;
-}
-
 static gboolean
 gst_gl_base_audio_visualizer_parent_setup(GstPMAudioVisualizer *pmav) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(pmav);
   GstGLBaseAudioVisualizerClass *glav_class =
       GST_GL_BASE_AUDIO_VISUALIZER_GET_CLASS(pmav);
 
-  // configure QoS for the pipeline, disabled for offline rendering
-  g_rec_mutex_lock(&glav->priv->context_lock);
-
-  gboolean is_realtime = is_pipeline_realtime(GST_ELEMENT(pmav));
-  glav->priv->is_realtime = is_realtime;
-
-  g_rec_mutex_unlock(&glav->priv->context_lock);
-
-  // update render buffer config
-  rb_set_qos_enabled(&glav->priv->render_buffer, is_realtime);
-
   GstClockTime caps_frame_duration =
       gst_util_uint64_scale_int(GST_SECOND, GST_VIDEO_INFO_FPS_D(&pmav->vinfo),
                                 GST_VIDEO_INFO_FPS_N(&pmav->vinfo));
+
   rb_set_caps_frame_duration(&glav->priv->render_buffer, caps_frame_duration);
 
-  GST_INFO_OBJECT(
-      glav,
-      "GL setup - render config: real-time: %s, caps-frame-duration: "
-      "%" GST_TIME_FORMAT
-      ", min-fps: %d/%d, min-fps-duration: %" GST_TIME_FORMAT,
-      is_realtime ? "true" : "false", GST_TIME_ARGS(caps_frame_duration),
-      glav->min_fps_n, glav->min_fps_d,
-      GST_TIME_ARGS(glav->priv->render_buffer.max_frame_duration));
+  GST_INFO_OBJECT(glav,
+                  "GL setup - render config: is-live: %s, caps-frame-duration: "
+                  "%" GST_TIME_FORMAT
+                  ", min-fps: %d/%d, min-fps-duration: %" GST_TIME_FORMAT,
+                  glav->priv->is_realtime ? "true" : "false",
+                  GST_TIME_ARGS(caps_frame_duration), glav->min_fps_n,
+                  glav->min_fps_d,
+                  GST_TIME_ARGS(glav->priv->render_buffer.max_frame_duration));
 
   // cascade setup to the derived plugin after gl initialization has been
   // completed
@@ -866,6 +870,42 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
   return TRUE;
 }
 
+/**
+ * Find pipeline clock and determine if it is a real-time clock.
+ *
+ * @param element Plugin element.
+ *
+ * @return TRUE if the pipeline clock is a real-time (system) clock.
+ */
+static gboolean is_pipeline_realtime(GstElement *element) {
+  GstClock *clock = NULL;
+  gboolean is_realtime = FALSE;
+
+  // first check element's own clock, then start climbing the hierarchy
+  clock = gst_element_get_clock(element);
+  if (!clock) {
+    // traverse parents to find the pipeline and ask it for its clock
+    GstObject *parent = gst_object_get_parent(GST_OBJECT(element));
+    while (parent && !GST_IS_PIPELINE(parent)) {
+      GstObject *next_parent = gst_object_get_parent(parent);
+      gst_object_unref(parent);
+      parent = next_parent;
+    }
+    if (parent && GST_IS_PIPELINE(parent)) {
+      GstPipeline *pipeline = GST_PIPELINE(parent);
+      clock = gst_pipeline_get_clock(pipeline);
+      gst_object_unref(parent);
+    }
+  }
+
+  if (clock) {
+    is_realtime = GST_IS_SYSTEM_CLOCK(clock);
+    gst_object_unref(clock);
+  }
+
+  return is_realtime;
+}
+
 static GstStateChangeReturn
 gst_gl_base_audio_visualizer_change_state(GstElement *element,
                                           GstStateChange transition) {
@@ -884,6 +924,21 @@ gst_gl_base_audio_visualizer_change_state(GstElement *element,
     gst_clear_object(&glav->display);
     g_rec_mutex_unlock(&glav->priv->context_lock);
     break;
+
+  case GST_STATE_CHANGE_READY_TO_PAUSED:
+    g_rec_mutex_lock(&glav->priv->context_lock);
+    // determine if we're using a real-time pipeline
+    if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
+      glav->priv->is_realtime = FALSE;
+    } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
+      glav->priv->is_realtime = TRUE;
+    } else {
+      // auto detect
+      glav->priv->is_realtime = is_pipeline_realtime(element);
+    }
+    g_rec_mutex_unlock(&glav->priv->context_lock);
+    break;
+
   default:
     break;
   }

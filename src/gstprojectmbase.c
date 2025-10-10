@@ -29,7 +29,8 @@ enum {
   PROP_PRESET_LOCKED,
   PROP_SHUFFLE_PRESETS,
   PROP_ENABLE_PLAYLIST,
-  PROP_MIN_FPS
+  PROP_MIN_FPS,
+  PROP_IS_LIVE
 };
 
 /**
@@ -51,6 +52,9 @@ enum {
 #define DEFAULT_ENABLE_PLAYLIST TRUE
 #define DEFAULT_SHUFFLE_PRESETS TRUE // depends on ENABLE_PLAYLIST
 #define DEFAULT_MIN_FPS "1/1"
+#define DEFAULT_MIN_FPS_N 1
+#define DEFAULT_MIN_FPS_D 1
+#define DEFAULT_IS_LIVE "auto"
 
 void gst_projectm_base_init_once() {
   GST_DEBUG_CATEGORY_INIT(gst_projectm_base_debug, "projectm_base", 0,
@@ -150,31 +154,33 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
     GST_DEBUG_OBJECT(plugin, "Playlist disabled");
   }
   // Log properties
-  GST_INFO_OBJECT(
-      plugin,
-      "Using Properties: "
-      "preset=%s, "
-      "texture-dir=%s, "
-      "beat-sensitivity=%f, "
-      "hard-cut-duration=%f, "
-      "hard-cut-enabled=%d, "
-      "hard-cut-sensitivity=%f, "
-      "soft-cut-duration=%f, "
-      "preset-duration=%f, "
-      "mesh-size=(%lu, %lu)"
-      "aspect-correction=%d, "
-      "easter-egg=%f, "
-      "preset-locked=%d, "
-      "enable-playlist=%d, "
-      "shuffle-presets=%d, "
-      "min-fps=%d/%d",
-      settings->preset_path, settings->texture_dir_path,
-      settings->beat_sensitivity, settings->hard_cut_duration,
-      settings->hard_cut_enabled, settings->hard_cut_sensitivity,
-      settings->soft_cut_duration, settings->preset_duration,
-      settings->mesh_width, settings->mesh_height, settings->aspect_correction,
-      settings->easter_egg, settings->preset_locked, settings->enable_playlist,
-      settings->shuffle_presets, settings->min_fps_n, settings->min_fps_d);
+  GST_INFO_OBJECT(plugin,
+                  "Using Properties: "
+                  "preset=%s, "
+                  "texture-dir=%s, "
+                  "beat-sensitivity=%f, "
+                  "hard-cut-duration=%f, "
+                  "hard-cut-enabled=%d, "
+                  "hard-cut-sensitivity=%f, "
+                  "soft-cut-duration=%f, "
+                  "preset-duration=%f, "
+                  "mesh-size=(%lu, %lu)"
+                  "aspect-correction=%d, "
+                  "easter-egg=%f, "
+                  "preset-locked=%d, "
+                  "enable-playlist=%d, "
+                  "shuffle-presets=%d, "
+                  "min-fps=%d/%d, "
+                  "is-live=%s",
+                  settings->preset_path, settings->texture_dir_path,
+                  settings->beat_sensitivity, settings->hard_cut_duration,
+                  settings->hard_cut_enabled, settings->hard_cut_sensitivity,
+                  settings->soft_cut_duration, settings->preset_duration,
+                  settings->mesh_width, settings->mesh_height,
+                  settings->aspect_correction, settings->easter_egg,
+                  settings->preset_locked, settings->enable_playlist,
+                  settings->shuffle_presets, settings->min_fps_n,
+                  settings->min_fps_d, settings->is_live);
 
   // Load preset file if path is provided
   if (settings->preset_path != NULL) {
@@ -314,6 +320,10 @@ void gst_projectm_base_set_property(GObject *object,
       g_object_set(G_OBJECT(glav), "min-fps-n", num, "min-fps-d", denom, NULL);
     }
     break;
+  case PROP_IS_LIVE:
+    settings->is_live = g_strdup(g_value_get_string(value));
+    g_object_set(G_OBJECT(glav), "is-live", settings->is_live, NULL);
+    break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
     break;
@@ -386,6 +396,9 @@ void gst_projectm_base_get_property(GObject *object,
     g_object_set(G_OBJECT(glav), "min-fps-n", settings->min_fps_n, "min-fps-d",
                  settings->min_fps_d, NULL);
     break;
+  case PROP_IS_LIVE:
+    g_value_set_string(value, settings->is_live);
+    break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
     break;
@@ -406,6 +419,9 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
   settings->preset_duration = DEFAULT_PRESET_DURATION;
   settings->enable_playlist = DEFAULT_ENABLE_PLAYLIST;
   settings->shuffle_presets = DEFAULT_SHUFFLE_PRESETS;
+  settings->min_fps_d = DEFAULT_MIN_FPS_D;
+  settings->min_fps_n = DEFAULT_MIN_FPS_N;
+  settings->is_live = DEFAULT_IS_LIVE;
 
   const gchar *meshSizeStr = DEFAULT_MESH_SIZE;
   gint width, height;
@@ -439,6 +455,7 @@ void gst_projectm_base_finalize(GstBaseProjectMSettings *settings,
                                 GstBaseProjectMPrivate *priv) {
   g_free(settings->preset_path);
   g_free(settings->texture_dir_path);
+  g_free(settings->is_live);
   g_mutex_clear(&priv->projectm_lock);
 }
 
@@ -686,4 +703,15 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
           "can't keep up with pipeline fps. Applies to real-time pipelines "
           "only.",
           DEFAULT_MIN_FPS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property(
+      gobject_class, PROP_IS_LIVE,
+      g_param_spec_string(
+          "is-live", "is live",
+          "Specifies if the plugin renders in real-time or as fast as possible "
+          "(offline). This setting is auto-detected and does not need to be "
+          "specified, but can be specified for cases where auto-detection is "
+          "not appropriate. Possible values are \"auto\", \"true\", \"false\". "
+          "Default is \"auto\".",
+          DEFAULT_IS_LIVE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }

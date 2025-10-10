@@ -64,12 +64,18 @@ GType gst_gl_base_audio_visualizer_get_type(void);
   (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_GL_BASE_AUDIO_VISUALIZER,         \
                              GstGLBaseAudioVisualizerClass))
 
+typedef enum {
+  GST_GL_BASE_AUDIO_VISUALIZER_REALTIME,
+  GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE,
+  GST_GL_BASE_AUDIO_VISUALIZER_AUTO
+} GstGLBaseAudioVisualizerMode;
+
 /**
  * GstGLBaseAudioVisualizer:
  * @display: the currently configured #GstGLDisplay
  * @context: the currently configured #GstGLContext
  *
- * The parent instance type of a base GL Audio Visualizer.
+ * The parent instance type of base GL Audio Visualizer.
  */
 struct _GstGLBaseAudioVisualizer {
   GstPMAudioVisualizer parent;
@@ -88,6 +94,11 @@ struct _GstGLBaseAudioVisualizer {
    */
   gint min_fps_d;
 
+  /**
+   * Operation mode property.
+   */
+  GstGLBaseAudioVisualizerMode is_live;
+
   /*< private >*/
   gpointer _padding[GST_PADDING];
 
@@ -97,7 +108,7 @@ struct _GstGLBaseAudioVisualizer {
 /**
  * GstGLBaseAudioVisualizerClass:
  * @supported_gl_api: the logical-OR of #GstGLAPI's supported by this element
- * @gl_start: called in the GL thread to setup the element GL state.
+ * @gl_start: called in the GL thread to set up the element GL state.
  * @gl_stop: called in the GL thread to clean up the element GL state.
  * @gl_render: called in the GL thread to fill the current video texture.
  * @setup: called when the format changes (delegate from

@@ -168,7 +168,8 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
                            const RBAdjustFpsFunc adjust_fps_func,
                            const GstClockTime max_frame_duration,
                            const GstClockTime caps_frame_duration,
-                           const gboolean is_qos_enabled) {
+                           const gboolean is_qos_enabled,
+                           const gboolean is_realtime) {
 
   GST_DEBUG_CATEGORY_INIT(renderbuffer_debug, "renderbuffer", 0,
                           "projectM visualizer plugin render buffer");
@@ -182,6 +183,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   g_atomic_int_set(&state->running, FALSE);
 
   state->qos_enabled = is_qos_enabled;
+  state->is_realtime = is_realtime;
   state->caps_frame_duration = caps_frame_duration;
   state->max_frame_duration = max_frame_duration;
 
@@ -193,6 +195,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   g_mutex_init(&state->slot_lock);
   g_cond_init(&state->slot_available_cond);
   g_cond_init(&state->render_queued_cond);
+  state->buffer_push_queue = g_async_queue_new();
   state->buffer_cleanup_queue = g_async_queue_new();
 
   for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
@@ -208,13 +211,14 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
 }
 
 void rb_dispose_render_buffer(RBRenderBuffer *state) {
+  g_async_queue_unref(state->buffer_push_queue);
   g_async_queue_unref(state->buffer_cleanup_queue);
   g_cond_clear(&state->slot_available_cond);
   g_cond_clear(&state->render_queued_cond);
   g_mutex_clear(&state->slot_lock);
 }
 
-RBQueueResult rb_queue_render_job(RBQueueArgs *args) {
+RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
 
   RBRenderBuffer *state = args->render_buffer;
   const gboolean wait_is_limited = args->max_wait != GST_CLOCK_TIME_NONE;
@@ -309,12 +313,12 @@ RBQueueResult rb_queue_render_job(RBQueueArgs *args) {
   return result;
 }
 
-void rb_queue_render_job_log(RBQueueArgs *args) {
+void rb_queue_render_task_log(RBQueueArgs *args) {
 
   RBRenderBuffer *state = args->render_buffer;
   const GstClockTime start_ts = gst_util_get_timestamp();
 
-  const RBQueueResult result = rb_queue_render_job(args);
+  const RBQueueResult result = rb_queue_render_task(args);
 
   switch (result) {
   case RB_EVICTED: {
@@ -393,13 +397,13 @@ static void gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
 }
 
 /**
- * Used to dispose of gl buffers only.
- * Consume buffers to clean-up and dispatches release through gl thread.
+ * Used to dispose of dropped gl buffers only.
+ * Consume buffers to clean-up and dispatch release through gl thread.
  *
- * @param user_data The GstBuffer pointer to release.
- * @return
+ * @param user_data Render buffer to use.
+ * @return NULL
  */
-static gpointer cleanup_thread_func(gpointer user_data) {
+static gpointer rb_cleanup_thread_func(gpointer user_data) {
 
   const RBRenderBuffer *state = (RBRenderBuffer *)user_data;
   // consume gl buffers to dispatch to gl thread for cleanup
@@ -447,6 +451,46 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
 }
 
 /**
+ * Pushes gl buffers for real-time rendering only.
+ * Consume buffers to push and wait until it's time to push.
+ *
+ * @param user_data Render buffer to use.
+ * @return NULL
+ */
+static gpointer rb_push_thread_func(gpointer user_data) {
+
+  const RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+
+  while (g_atomic_int_get(&state->running)) {
+
+    // consume gl buffer to push
+    gpointer item = g_async_queue_pop(state->buffer_push_queue);
+
+    if (!item || item == RB_Q_SHUTDOWN_SIGNAL)
+      continue;
+
+    GstBuffer *outbuf = GST_BUFFER(item);
+
+    // buffers are in PTS order, wait until it's time to push
+    GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
+    if (clock) {
+      GstClockTime base_time =
+          gst_element_get_base_time(GST_ELEMENT(state->plugin));
+      GstClockTime abs_time = GST_BUFFER_PTS(outbuf) + base_time;
+      gst_clock_id_wait(gst_clock_new_single_shot_id(clock, abs_time), NULL);
+      gst_object_unref(clock);
+    }
+
+    // push buffer downstream
+    const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
+    if (ret != GST_FLOW_OK) {
+      GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
+    }
+  }
+  return NULL;
+}
+
+/**
  * Send a video buffer to the source pad downstream.
  * Buffer is checked and timestamps are populated before sending.
  *
@@ -470,10 +514,20 @@ GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
     GST_BUFFER_DTS(outbuf) = pts;
     GST_BUFFER_DURATION(outbuf) = frame_duration;
 
-    // push buffer downstream
-    const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
-    if (ret != GST_FLOW_OK) {
-      GST_WARNING("Failed to push buffer to pad");
+    GstFlowReturn ret;
+    if (state->is_realtime) {
+      // for real-time, we need to wait until it's time to push the buffer
+      // dispatch the wait and push to another thread to keep rendering as fast
+      // as we can (and get audio buffers)
+      g_async_queue_push(state->buffer_push_queue, outbuf);
+      ret = GST_FLOW_OK;
+    } else {
+      // push buffer downstream directly for offline rendering, avoid scheduling
+      // overhead
+      ret = gst_pad_push(state->src_pad, outbuf);
+      if (ret != GST_FLOW_OK) {
+        GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
+      }
     }
     return ret;
   }
@@ -642,30 +696,44 @@ static gpointer rb_render_thread_func(gpointer user_data) {
   return NULL;
 }
 
-void rb_start_render_thread(RBRenderBuffer *state, GstGLContext *gl_context,
-                            GstPad *src_pad) {
+void rb_start(RBRenderBuffer *state, GstGLContext *gl_context,
+              GstPad *src_pad) {
   state->gl_context = gl_context;
   state->src_pad = src_pad;
   g_atomic_int_set(&state->running, TRUE);
-  state->render_thread =
-      g_thread_new("rb-render-thread", rb_render_thread_func, state);
-  state->cleanup_thread =
-      g_thread_new("rb-cleanup-thread", cleanup_thread_func, state);
+
+  // threads are not needed for offline rendering
+  if (state->is_realtime) {
+    state->render_thread =
+        g_thread_new("rb-render-thread", rb_render_thread_func, state);
+    state->push_thread =
+        g_thread_new("rb-push-thread", rb_push_thread_func, state);
+    state->cleanup_thread =
+        g_thread_new("rb-cleanup-thread", rb_cleanup_thread_func, state);
+  }
 
   GST_INFO_OBJECT(state->plugin, "Started render buffer");
 }
 
-void rb_stop_render_thread(RBRenderBuffer *state) {
+void rb_stop(RBRenderBuffer *state) {
 
-  g_mutex_lock(&state->slot_lock);
   g_atomic_int_set(&state->running, FALSE);
 
-  g_cond_broadcast(&state->render_queued_cond);
-  g_mutex_unlock(&state->slot_lock);
+  // threads are not needed for offline rendering
+  if (state->is_realtime) {
+    g_mutex_lock(&state->slot_lock);
+    g_cond_broadcast(&state->render_queued_cond);
+    g_mutex_unlock(&state->slot_lock);
 
-  g_thread_join(state->render_thread);
-  g_async_queue_push(state->buffer_cleanup_queue, RB_Q_SHUTDOWN_SIGNAL);
-  g_thread_join(state->cleanup_thread);
+    g_thread_join(state->render_thread);
+
+    g_async_queue_push(state->buffer_push_queue, RB_Q_SHUTDOWN_SIGNAL);
+    g_thread_join(state->push_thread);
+
+    g_async_queue_push(state->buffer_cleanup_queue, RB_Q_SHUTDOWN_SIGNAL);
+    g_thread_join(state->cleanup_thread);
+  }
+
   state->gl_context = NULL;
   state->src_pad = NULL;
   GST_INFO_OBJECT(state->plugin, "Stopped render buffer");

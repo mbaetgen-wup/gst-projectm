@@ -718,7 +718,7 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
   GstFlowReturn ret = GST_FLOW_OK;
   GstPMAudioVisualizer *scope = GST_PM_AUDIO_VISUALIZER(parent);
   GstPMAudioVisualizerClass *klass;
-  GstClockTime ts, frame_duration;
+  GstClockTime ts;
   guint avail, sbpf;
   // databuf is a buffer holding one video frame worth of audio data used as
   // temp buffer for copying from the adapter only
@@ -793,24 +793,23 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
 
   inbuf = scope->priv->inbuf;
 
-  /* original code FIXME: the timestamp in the adapter would be different - this
-   * should be fixed now by deriving timestamps from the number of samples
-   * consumed. */
+  // prepare buffer
   gst_buffer_copy_into(inbuf, buffer, GST_BUFFER_COPY_METADATA, 0, -1);
 
   /* this is what we have */
   avail = gst_adapter_available(scope->priv->adapter);
-  // GST_LOG_OBJECT(scope, "avail: %u, bpf: %u", avail, sbpf);
+
   while (avail >= sbpf) {
 
     gboolean fps_changed_since_last_frame = scope->priv->fps_changed;
     scope->priv->fps_changed = FALSE;
 
     // make sure frame duration does not change while processing one frame
-    frame_duration = scope->req_frame_duration;
+    const GstClockTime frame_duration = scope->req_frame_duration;
 
-    /* calculate timestamp based on audio input samples already processed to
-     * avoid clock drift */
+    // derive timestamps from the number of samples consumed,
+    // calculate timestamp based on audio input samples already processed to
+    // avoid clock drift
     ts = scope->priv->pts_offset +
          gst_util_uint64_scale_int(scope->priv->samples_consumed, GST_SECOND,
                                    GST_AUDIO_INFO_RATE(&scope->ainfo));
@@ -859,8 +858,9 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
       }
     }
 
-    /* map pts ts via segment for general use */
-    ts = gst_segment_to_stream_time(&scope->priv->segment, GST_FORMAT_TIME, ts);
+    // map pts ts via segment to running time
+    ts =
+        gst_segment_to_running_time(&scope->priv->segment, GST_FORMAT_TIME, ts);
 
     ++scope->priv->processed;
 
@@ -901,8 +901,8 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
       gst_adapter_flush(scope->priv->adapter, sbpf);
     } else if (avail >= sbpf) {
       // was just enough audio data for one frame
-      /* just flush a bit and stop */
       // rendering. seems like a bug in the original code
+      /* just flush a bit and stop */
       // gst_adapter_flush(scope->priv->adapter, (avail - sbpf));
 
       // instead just flush one video frame worth of audio data from the buffer
