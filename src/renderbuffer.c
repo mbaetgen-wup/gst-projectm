@@ -25,7 +25,7 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
  */
 #ifndef RB_EMA_ALPHA_N
 #define RB_EMA_ALPHA_N 1
-#define RB_EMA_ALPHA_D 4
+#define RB_EMA_ALPHA_D 5
 #endif
 
 /**
@@ -60,8 +60,8 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
  * allow render time as low as 0.9x
  */
 #ifndef RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N
-#define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N 9
-#define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_D 10
+#define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N 95
+#define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_D 100
 #endif
 
 /**
@@ -157,12 +157,6 @@ static void rb_queue_gl_buffer_cleanup(const RBRenderBuffer *state,
   g_async_queue_push(state->buffer_cleanup_queue, out);
 }
 
-void rb_set_qos_enabled(RBRenderBuffer *state, const gboolean is_qos_enabled) {
-  g_mutex_lock(&state->slot_lock);
-  state->qos_enabled = is_qos_enabled;
-  g_mutex_unlock(&state->slot_lock);
-}
-
 void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
                            const GstGLContextThreadFunc gl_fill_func,
                            const RBAdjustFpsFunc adjust_fps_func,
@@ -191,12 +185,18 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   state->last_render_index = -1;
   state->frame_counter = 0;
   state->smoothed_render_time = 0;
+  state->buffer_push_queue_read_idx = -1;
+  state->buffer_push_queue_write_idx = -1;
 
   g_mutex_init(&state->slot_lock);
+  g_mutex_init(&state->buffer_push_queue_mutex);
   g_cond_init(&state->slot_available_cond);
   g_cond_init(&state->render_queued_cond);
-  state->buffer_push_queue = g_async_queue_new();
+  g_cond_init(&state->buffer_push_queue_cond);
   state->buffer_cleanup_queue = g_async_queue_new();
+  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+    state->buffer_push_queue[i] = NULL;
+  }
 
   for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
     state->slots[i].state = RB_EMPTY;
@@ -211,11 +211,18 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
 }
 
 void rb_dispose_render_buffer(RBRenderBuffer *state) {
-  g_async_queue_unref(state->buffer_push_queue);
+  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+    if (state->buffer_push_queue[i] != NULL) {
+      rb_queue_gl_buffer_cleanup(state, state->buffer_push_queue[i]);
+      state->buffer_push_queue[i] = NULL;
+    }
+  }
   g_async_queue_unref(state->buffer_cleanup_queue);
   g_cond_clear(&state->slot_available_cond);
   g_cond_clear(&state->render_queued_cond);
+  g_cond_clear(&state->buffer_push_queue_cond);
   g_mutex_clear(&state->slot_lock);
+  g_mutex_clear(&state->buffer_push_queue_mutex);
 }
 
 RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
@@ -451,6 +458,35 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
 }
 
 /**
+ * Schedule a rendered gl buffer for pushing downstream.
+ * The buffer will not be pushed until it's PTS time is reached.
+ * Subsequent queued buffers will override existing buffers if they are not due
+ * for pushing in time.
+ *
+ * @param state The render buffer to use.
+ * @param buffer The gl buffer to push. Takes ownership of the buffer.
+ */
+static void rb_schedule_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
+  g_mutex_lock(&state->buffer_push_queue_mutex);
+
+  // just writer to the next position in the ring, no matter what
+  state->buffer_push_queue_write_idx =
+      (state->buffer_push_queue_write_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+
+  // dispose buffer, if any
+  if (state->buffer_push_queue[state->buffer_push_queue_write_idx] != NULL) {
+    rb_queue_gl_buffer_cleanup(
+        state, state->buffer_push_queue[state->buffer_push_queue_write_idx]);
+  }
+
+  // take the spot and signal that queue has changed
+  state->buffer_push_queue[state->buffer_push_queue_write_idx] = buffer;
+  g_cond_signal(&state->buffer_push_queue_cond);
+
+  g_mutex_unlock(&state->buffer_push_queue_mutex);
+}
+
+/**
  * Pushes gl buffers for real-time rendering only.
  * Consume buffers to push and wait until it's time to push.
  *
@@ -459,34 +495,89 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
  */
 static gpointer rb_push_thread_func(gpointer user_data) {
 
-  const RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+  RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+
+  // buffers are in PTS order, wait until it's time to push
+
+  GstClockTimeDiff used_wait;
+  GstClockTimeDiff frame_wait;
+  GstClockTime wait_start;
+
+  g_mutex_lock(&state->buffer_push_queue_mutex);
 
   while (g_atomic_int_get(&state->running)) {
 
+    state->buffer_push_queue_read_idx =
+        (state->buffer_push_queue_read_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+
     // consume gl buffer to push
-    gpointer item = g_async_queue_pop(state->buffer_push_queue);
-
-    if (!item || item == RB_Q_SHUTDOWN_SIGNAL)
+    if (state->buffer_push_queue[state->buffer_push_queue_read_idx] == NULL) {
+      // no buffer to push, wait for one
+      state->buffer_push_queue_read_idx = state->buffer_push_queue_write_idx;
+      g_cond_wait(&state->buffer_push_queue_cond,
+                  &state->buffer_push_queue_mutex);
       continue;
-
-    GstBuffer *outbuf = GST_BUFFER(item);
-
-    // buffers are in PTS order, wait until it's time to push
-    GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
-    if (clock) {
-      GstClockTime base_time =
-          gst_element_get_base_time(GST_ELEMENT(state->plugin));
-      GstClockTime abs_time = GST_BUFFER_PTS(outbuf) + base_time;
-      gst_clock_id_wait(gst_clock_new_single_shot_id(clock, abs_time), NULL);
-      gst_object_unref(clock);
     }
+
+    // the buffer to push (for now, we may still lose it)
+    GstBuffer *outbuf =
+        state->buffer_push_queue[state->buffer_push_queue_read_idx];
+
+    // determine when it's time to push
+    GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
+    GstClockTime base_time =
+        gst_element_get_base_time(GST_ELEMENT(state->plugin));
+
+    const GstClockTime pts = GST_BUFFER_PTS(outbuf);
+    const GstClockTime abs_time = pts + base_time;
+
+    wait_start = gst_clock_get_time(clock);
+    frame_wait = GST_CLOCK_DIFF(wait_start, abs_time);
+    used_wait = 0;
+    gboolean abort = FALSE;
+
+    // interruptable wait, continues when ring buffer read pointer is overtaken
+    // by write pointer while waiting
+    while (used_wait < frame_wait) {
+
+      abort = !g_atomic_int_get(&state->running);
+      if (abort) {
+        break;
+      }
+
+      // wait until it's time to push or another buffer is queued
+      g_cond_wait_until(&state->buffer_push_queue_cond,
+                        &state->buffer_push_queue_mutex,
+                        (GstClockTimeDiff)wait_start + frame_wait - used_wait);
+      used_wait = (GstClockTimeDiff)gst_clock_get_time(clock) - wait_start;
+
+      // were we overtaken ?
+      if (state->buffer_push_queue[state->buffer_push_queue_read_idx] !=
+          outbuf) {
+        abort = TRUE;
+        break;
+      }
+    }
+    gst_object_unref(clock);
+
+    if (abort) {
+      continue;
+    }
+
+    // now we own the buffer to push
+    state->buffer_push_queue[state->buffer_push_queue_read_idx] = NULL;
+
+    g_mutex_unlock(&state->buffer_push_queue_mutex);
 
     // push buffer downstream
     const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
     if (ret != GST_FLOW_OK) {
       GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
     }
+    g_mutex_lock(&state->buffer_push_queue_mutex);
   }
+  g_mutex_unlock(&state->buffer_push_queue_mutex);
+
   return NULL;
 }
 
@@ -519,7 +610,7 @@ GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
       // for real-time, we need to wait until it's time to push the buffer
       // dispatch the wait and push to another thread to keep rendering as fast
       // as we can (and get audio buffers)
-      g_async_queue_push(state->buffer_push_queue, outbuf);
+      rb_schedule_push_buffer(state, outbuf);
       ret = GST_FLOW_OK;
     } else {
       // push buffer downstream directly for offline rendering, avoid scheduling
@@ -658,6 +749,21 @@ static gpointer rb_render_thread_func(gpointer user_data) {
 
     g_mutex_unlock(&state->slot_lock);
 
+    // throttle rendering
+    GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
+    if (clock) {
+      GstClockTime base_time =
+          gst_element_get_base_time(GST_ELEMENT(state->plugin));
+      GstClockTime now = gst_clock_get_time(clock) - base_time;
+
+      // wait if we're too far ahead
+      if (now < (GstClockTimeDiff)slot->pts - slot->frame_duration) {
+        gst_clock_id_wait(
+            gst_clock_new_single_shot_id(clock, base_time + slot->pts), NULL);
+      }
+    }
+    gst_object_unref(clock);
+
     // perform gl rendering
     GstClockTime render_time = rb_render_slot(state, slot);
 
@@ -727,7 +833,7 @@ void rb_stop(RBRenderBuffer *state) {
 
     g_thread_join(state->render_thread);
 
-    g_async_queue_push(state->buffer_push_queue, RB_Q_SHUTDOWN_SIGNAL);
+    rb_schedule_push_buffer(state, NULL);
     g_thread_join(state->push_thread);
 
     g_async_queue_push(state->buffer_cleanup_queue, RB_Q_SHUTDOWN_SIGNAL);

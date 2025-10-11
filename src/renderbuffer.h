@@ -66,6 +66,15 @@ G_BEGIN_DECLS
 #endif
 
 /**
+ * Max frames waiting in a scheduled state to be pushed.
+ * Should be short, will drop frames if newer frame are queued, last frame wins.
+ * Render loop if real-time capped, there should not be many buffers waiting.
+ */
+#ifndef PUSH_QUEUE_MAX_SIZE
+#define PUSH_QUEUE_MAX_SIZE 2
+#endif
+
+/**
  * Callback function pointer type for triggering a dynamic fps change.
  */
 typedef void (*RBAdjustFpsFunc)(gpointer user_data, guint64 frame_duration);
@@ -213,9 +222,29 @@ typedef struct {
   GThread *push_thread;
 
   /**
-   * Queue to schedule gl buffers for pushing.
+   * Ring buffer to schedule gl buffers for pushing.
    */
-  GAsyncQueue *buffer_push_queue;
+  GstBuffer *buffer_push_queue[PUSH_QUEUE_MAX_SIZE];
+
+  /**
+   * Push ring buffer write position.
+   */
+  gint buffer_push_queue_write_idx;
+
+  /**
+   * Push ring buffer read position.
+   */
+  gint buffer_push_queue_read_idx;
+
+  /**
+   * Mutex for push ring buffer.
+   */
+  GMutex buffer_push_queue_mutex;
+
+  /**
+   * Condition as interruptable scheduling clock for push ring buffer.
+   */
+  GCond buffer_push_queue_cond;
 
   /**
    * Queue to dispose of dropped gl buffers.
