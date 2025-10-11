@@ -38,6 +38,14 @@
  *  - If the render duration exceeds the fps *most of the time*, an Exponential
  *    Moving Average (EMA) based algorithm instructs the plugin to reduce fps.
  *    EMA will also recover fps when render performance increases again.
+ *
+ *  - Buffers that completed rendering are scheduled to be pushed to the source
+ *    pad at PTS. A ring buffer queues buffers for pushing. The buffer acts like
+ *    a blocking queue with scheduling wait. A separate worker thread consumes
+ *    the ring buffer and waits for reaching the PTS of the current buffer. The
+ *    wait is interruptable, in case the read pointer is overtaken by the write
+ *    pointer, waiting for PTS is aborted and the next frame is scheduled
+ *    immediately.
  */
 
 #ifndef __RENDERBUFFER_H__
@@ -66,9 +74,10 @@ G_BEGIN_DECLS
 #endif
 
 /**
- * Max frames waiting in a scheduled state to be pushed.
+ * Max number of frames waiting in a scheduled state to be pushed.
  * Should be short, will drop frames if newer frame are queued, last frame wins.
- * Render loop if real-time capped, there should not be many buffers waiting.
+ * Render loop is real-time capped, there should not be a lot of buffers
+ * waiting.
  */
 #ifndef PUSH_QUEUE_MAX_SIZE
 #define PUSH_QUEUE_MAX_SIZE 2
