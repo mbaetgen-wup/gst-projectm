@@ -81,7 +81,7 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
 
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
-#define DEFAULT_IS_LIVE "auto"
+#define DEFAULT_PIPELINE_LIVE "auto"
 
 struct _GstGLBaseAudioVisualizerPrivate {
   GstGLContext *other_context;
@@ -97,7 +97,7 @@ struct _GstGLBaseAudioVisualizerPrivate {
 };
 
 /* Properties */
-enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D, PROP_IS_LIVE };
+enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D, PROP_PIPELINE_LIVE };
 
 #define gst_gl_base_audio_visualizer_parent_class parent_class
 G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
@@ -255,12 +255,12 @@ gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
                        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property(
-      gobject_class, PROP_IS_LIVE,
-      g_param_spec_string("is-live", "Is Live",
+      gobject_class, PROP_PIPELINE_LIVE,
+      g_param_spec_string("pipeline-live", "Pipeline Live",
                           "Specifies if this element renders in real-time "
                           "(true) or as fast as possible for offline rendering "
                           "(false) or to auto-detect pipeline clock (auto)",
-                          DEFAULT_IS_LIVE,
+                          DEFAULT_PIPELINE_LIVE,
                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
@@ -324,7 +324,7 @@ static void gst_gl_base_audio_visualizer_set_property(GObject *object,
     glav->min_fps_d = g_value_get_int(value);
     break;
 
-  case PROP_IS_LIVE:
+  case PROP_PIPELINE_LIVE:
     const char *str = g_value_get_string(value);
     if (strcasecmp("true", str) == 0) {
       glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_REALTIME;
@@ -357,7 +357,7 @@ static void gst_gl_base_audio_visualizer_get_property(GObject *object,
     g_value_set_int(value, glav->min_fps_d);
     break;
 
-  case PROP_IS_LIVE:
+  case PROP_PIPELINE_LIVE:
     if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
       g_value_set_string(value, "true");
     } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
@@ -504,6 +504,7 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
 
   // stop gl rendering first
   rb_stop(&glav->priv->render_buffer);
+  rb_clear(&glav->priv->render_buffer);
 
   // clean up implementor
   if (glav->priv->gl_started) {

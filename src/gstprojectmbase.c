@@ -325,7 +325,7 @@ void gst_projectm_base_set_property(GObject *object,
   case PROP_IS_LIVE:
     g_free(settings->is_live);
     settings->is_live = g_strdup(g_value_get_string(value));
-    g_object_set(G_OBJECT(glav), "is-live", settings->is_live, NULL);
+    g_object_set(G_OBJECT(glav), "pipeline-live", settings->is_live, NULL);
     break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);

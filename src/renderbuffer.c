@@ -86,22 +86,24 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
 static void rb_handle_adaptive_fps_ema(RBRenderBuffer *state,
                                        const GstClockTime render_duration,
                                        const GstClockTime frame_duration) {
-  state->frame_counter++;
+  g_assert(state != NULL);
+
+  state->ema_frame_counter++;
 
   // EMA smoothing: smoothed = alpha * x + (1 - alpha) * prev
-  state->smoothed_render_time =
+  state->ema_smoothed_render_time =
 
       gst_util_uint64_scale_int(render_duration, RB_EMA_ALPHA_N,
                                 RB_EMA_ALPHA_D) +
 
-      gst_util_uint64_scale_int(state->smoothed_render_time,
+      gst_util_uint64_scale_int(state->ema_smoothed_render_time,
                                 RB_EMA_ALPHA_D - RB_EMA_ALPHA_N,
                                 RB_EMA_ALPHA_D);
 
-  if (state->frame_counter >= RB_EMA_FPS_ADJUST_INTERVAL) {
+  if (state->ema_frame_counter >= RB_EMA_FPS_ADJUST_INTERVAL) {
 
     GstClockTime new_duration;
-    state->frame_counter = 0;
+    state->ema_frame_counter = 0;
 
     const GstClockTime upper_threshold = gst_util_uint64_scale_int(
         frame_duration, RB_EMA_FRAME_DURATION_TOLERANCE_UP_N,
@@ -111,13 +113,13 @@ static void rb_handle_adaptive_fps_ema(RBRenderBuffer *state,
         frame_duration, RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N,
         RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_D);
 
-    if (state->smoothed_render_time > upper_threshold) {
+    if (state->ema_smoothed_render_time > upper_threshold) {
 
       // rendering too slow, increase frame duration (drop FPS)
       new_duration = gst_util_uint64_scale_int(
           frame_duration, RB_EMA_FRAME_DURATION_INCREASE_N,
           RB_EMA_FRAME_DURATION_INCREASE_D);
-    } else if (state->smoothed_render_time < lower_threshold) {
+    } else if (state->ema_smoothed_render_time < lower_threshold) {
 
       // rendering fast enough, try to decrease frame duration (increase FPS)
       new_duration = gst_util_uint64_scale_int(
@@ -152,8 +154,9 @@ static void rb_handle_adaptive_fps_ema(RBRenderBuffer *state,
   }
 }
 
-static void rb_queue_gl_buffer_cleanup(const RBRenderBuffer *state,
-                                       GstBuffer *out) {
+static void rb_queue_gl_buffer_cleanup(RBRenderBuffer *state, GstBuffer *out) {
+  g_assert(state != NULL);
+  g_assert(out != NULL);
   g_async_queue_push(state->buffer_cleanup_queue, out);
 }
 
@@ -165,38 +168,35 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
                            const gboolean is_qos_enabled,
                            const gboolean is_realtime) {
 
+  g_assert(state != NULL);
+
   GST_DEBUG_CATEGORY_INIT(renderbuffer_debug, "renderbuffer", 0,
                           "projectM visualizer plugin render buffer");
 
+  // context config without ownership
   state->plugin = plugin;
   state->adjust_fps_func = adjust_fps_func;
 
+  // we'll get these later
   state->gl_context = NULL;
   state->src_pad = NULL;
-  state->render_thread = NULL;
-  g_atomic_int_set(&state->running, FALSE);
 
+  // never changed after init
   state->qos_enabled = is_qos_enabled;
   state->is_realtime = is_realtime;
   state->caps_frame_duration = caps_frame_duration;
   state->max_frame_duration = max_frame_duration;
 
-  state->last_insert_index = -1;
-  state->last_render_index = -1;
-  state->frame_counter = 0;
-  state->smoothed_render_time = 0;
-  state->buffer_push_queue_read_idx = -1;
-  state->buffer_push_queue_write_idx = -1;
+  // changed all the time
+  g_atomic_int_set(&state->running, FALSE);
 
+  // init render queue
+  state->render_thread = NULL;
+  state->render_write_idx = -1;
+  state->render_read_idx = -1;
   g_mutex_init(&state->slot_lock);
-  g_mutex_init(&state->buffer_push_queue_mutex);
   g_cond_init(&state->slot_available_cond);
   g_cond_init(&state->render_queued_cond);
-  g_cond_init(&state->buffer_push_queue_cond);
-  state->buffer_cleanup_queue = g_async_queue_new();
-  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
-    state->buffer_push_queue[i] = NULL;
-  }
 
   for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
     state->slots[i].state = RB_EMPTY;
@@ -208,20 +208,45 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
     state->slots[i].gl_fill_func = gl_fill_func;
     state->slots[i].in_audio = NULL;
   }
+
+  // init EMA
+  state->ema_frame_counter = 0;
+  state->ema_smoothed_render_time = 0;
+
+  // init push queue
+  state->push_thread = NULL;
+  state->push_queue_read_idx = -1;
+  state->push_queue_write_idx = -1;
+  g_mutex_init(&state->push_queue_mutex);
+  g_cond_init(&state->push_queue_cond);
+  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+    state->push_queue[i] = NULL;
+  }
+
+  // init clean up queue
+  state->cleanup_thread = NULL;
+  state->buffer_cleanup_queue = g_async_queue_new();
 }
 
 void rb_dispose_render_buffer(RBRenderBuffer *state) {
+  g_assert(state != NULL);
+
   g_async_queue_unref(state->buffer_cleanup_queue);
+
   g_cond_clear(&state->slot_available_cond);
   g_cond_clear(&state->render_queued_cond);
-  g_cond_clear(&state->buffer_push_queue_cond);
+  g_cond_clear(&state->push_queue_cond);
+
   g_mutex_clear(&state->slot_lock);
-  g_mutex_clear(&state->buffer_push_queue_mutex);
+  g_mutex_clear(&state->push_queue_mutex);
 }
 
 RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
+  g_assert(args != NULL);
 
   RBRenderBuffer *state = args->render_buffer;
+  g_assert(state != NULL);
+
   const gboolean wait_is_limited = args->max_wait != GST_CLOCK_TIME_NONE;
   const GstClockTime start = gst_util_get_timestamp();
   GstClockTimeDiff used_wait = 0;
@@ -229,18 +254,18 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
   g_mutex_lock(&state->slot_lock);
 
   RBSlot *slot = NULL;
-  gint slot_index;
+  gint slot_index = 0;
 
   gboolean found_slot = FALSE;
   while (!found_slot) {
 
     // next slot to insert to
-    slot_index = (state->last_insert_index + 1) % NUM_RENDER_SLOTS;
+    slot_index = (state->render_write_idx + 1) % NUM_RENDER_SLOTS;
     slot = &state->slots[slot_index];
 
     // jump over busy slot that's currently rendering if needed
     if (slot->state == RB_BUSY) {
-      slot_index = (state->last_insert_index + 2) % NUM_RENDER_SLOTS;
+      slot_index = (state->render_write_idx + 2) % NUM_RENDER_SLOTS;
     }
 
     // in case there is only one slot, it may still be busy
@@ -249,7 +274,8 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
 
     if (!found_slot) {
       if (wait_is_limited) {
-        const GstClockTimeDiff remaining_wait = args->max_wait - used_wait;
+        const GstClockTimeDiff remaining_wait =
+            (GstClockTimeDiff)args->max_wait - used_wait;
         // not waiting until the very last millisecond
         // to avoid exceeding time budget
         if (remaining_wait > MIN_FREE_SLOT_SCHEDULE_WAIT) {
@@ -261,7 +287,7 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
           g_cond_wait_until(&state->slot_available_cond, &state->slot_lock,
                             deadline);
 
-          used_wait = (GstClockTimeDiff)gst_util_get_timestamp() - start;
+          used_wait = GST_CLOCK_DIFF(start, gst_util_get_timestamp());
         } else {
           // not enough time left
           break;
@@ -280,7 +306,7 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
     return RB_TIMEOUT;
   }
 
-  state->last_insert_index = slot_index;
+  state->render_write_idx = slot_index;
 
   // evict if already in use and clear buffers
   const gboolean is_evicted = slot->state == RB_READY;
@@ -316,7 +342,12 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
 
 void rb_queue_render_task_log(RBQueueArgs *args) {
 
+  g_assert(args != NULL);
+
   RBRenderBuffer *state = args->render_buffer;
+
+  g_assert(state != NULL);
+
   const GstClockTime start_ts = gst_util_get_timestamp();
 
   const RBQueueResult result = rb_queue_render_task(args);
@@ -365,6 +396,8 @@ gboolean rb_is_render_too_late(GstElement *element, const GstClockTime latency,
                                const GstClockTime running_time,
                                const GstClockTime tolerance) {
 
+  g_assert(element != NULL);
+
   if (latency == GST_CLOCK_TIME_NONE) {
     return FALSE;
   }
@@ -394,6 +427,7 @@ gboolean rb_is_render_too_late(GstElement *element, const GstClockTime latency,
  * @param buf GL buffer to release.
  */
 static void gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
+  (void)context;
   gst_buffer_unref(GST_BUFFER(buf));
 }
 
@@ -406,7 +440,9 @@ static void gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
  */
 static gpointer rb_cleanup_thread_func(gpointer user_data) {
 
-  const RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+  RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+  g_assert(state != NULL);
+
   // consume gl buffers to dispatch to gl thread for cleanup
   while (g_atomic_int_get(&state->running)) {
 
@@ -430,12 +466,13 @@ static gpointer rb_cleanup_thread_func(gpointer user_data) {
  */
 GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
   // measure rendering for QoS
-  GstClockTime render_start = gst_util_get_timestamp();
+  const GstClockTime render_start = gst_util_get_timestamp();
 
   // Dispatch slot to GL thread
   gst_gl_context_thread_add(state->gl_context, slot->gl_fill_func, slot);
 
-  GstClockTime render_time = gst_util_get_timestamp() - render_start;
+  const GstClockTime render_time =
+      GST_CLOCK_DIFF(render_start, gst_util_get_timestamp());
 
   // render took longer than the frame duration, this is a problem for
   // real-time rendering if it happens too often
@@ -460,29 +497,54 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
  * @param state The render buffer to use.
  * @param buffer The gl buffer to push. Takes ownership of the buffer.
  */
-static void rb_schedule_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
-  g_mutex_lock(&state->buffer_push_queue_mutex);
+static void rb_queue_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
+  g_assert(state != NULL);
+  g_assert(buffer != NULL);
+
+  g_mutex_lock(&state->push_queue_mutex);
 
   // just write to the next position in the ring, no matter what
-  state->buffer_push_queue_write_idx =
-      (state->buffer_push_queue_write_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+  state->push_queue_write_idx =
+      (state->push_queue_write_idx + 1) % PUSH_QUEUE_MAX_SIZE;
 
-  // dispose buffer, if any
-  if (state->buffer_push_queue[state->buffer_push_queue_write_idx] != NULL) {
-    rb_queue_gl_buffer_cleanup(
-        state, state->buffer_push_queue[state->buffer_push_queue_write_idx]);
+  // dispose of buffer, if any
+  if (state->push_queue[state->push_queue_write_idx] != NULL) {
+    rb_queue_gl_buffer_cleanup(state,
+                               state->push_queue[state->push_queue_write_idx]);
   }
 
   // take the spot and signal that queue has changed
-  state->buffer_push_queue[state->buffer_push_queue_write_idx] = buffer;
-  g_cond_signal(&state->buffer_push_queue_cond);
+  state->push_queue[state->push_queue_write_idx] = buffer;
+  g_cond_signal(&state->push_queue_cond);
 
-  g_mutex_unlock(&state->buffer_push_queue_mutex);
+  g_mutex_unlock(&state->push_queue_mutex);
+}
+
+/**
+ * Removes and disposes all queued buffers and resets queue state.
+ *
+ * @param state State to clear.
+ */
+static void rb_clear_push_queue(RBRenderBuffer *state) {
+  g_assert(state != NULL);
+  g_mutex_lock(&state->push_queue_mutex);
+
+  // release buffers that are still queued before cleanup thread shuts down
+  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+    if (state->push_queue[i] != NULL) {
+      rb_queue_gl_buffer_cleanup(state, state->push_queue[i]);
+      state->push_queue[i] = NULL;
+    }
+  }
+  state->push_queue_read_idx = -1;
+  state->push_queue_write_idx = -1;
+
+  g_mutex_unlock(&state->push_queue_mutex);
 }
 
 /**
  * Pushes gl buffers for real-time rendering only.
- * Consume buffers to push and wait until it's time to push.
+ * Consume buffers to push and wait until it's PTS time to push.
  *
  * @param user_data Render buffer to use.
  * @return NULL
@@ -490,97 +552,83 @@ static void rb_schedule_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
 static gpointer rb_push_thread_func(gpointer user_data) {
 
   RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+  g_assert(state != NULL);
 
-  // buffers are in PTS order, wait until it's time to push
-
-  GstClockTimeDiff used_wait;
-  GstClockTimeDiff frame_wait;
-  GstClockTime wait_start;
-
-  g_mutex_lock(&state->buffer_push_queue_mutex);
+  g_mutex_lock(&state->push_queue_mutex);
 
   while (g_atomic_int_get(&state->running)) {
 
-    state->buffer_push_queue_read_idx =
-        (state->buffer_push_queue_read_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+    state->push_queue_read_idx =
+        (state->push_queue_read_idx + 1) % PUSH_QUEUE_MAX_SIZE;
 
     // consume gl buffer to push
-    if (state->buffer_push_queue[state->buffer_push_queue_read_idx] == NULL) {
+    if (state->push_queue[state->push_queue_read_idx] == NULL) {
       // no buffer to push, wait for one
-      state->buffer_push_queue_read_idx = state->buffer_push_queue_write_idx;
-      g_cond_wait(&state->buffer_push_queue_cond,
-                  &state->buffer_push_queue_mutex);
+      state->push_queue_read_idx = state->push_queue_write_idx;
+      g_cond_wait(&state->push_queue_cond, &state->push_queue_mutex);
       continue;
     }
 
     // the buffer to push (for now, we may still lose it)
-    GstBuffer *outbuf =
-        state->buffer_push_queue[state->buffer_push_queue_read_idx];
+    GstBuffer *outbuf = state->push_queue[state->push_queue_read_idx];
+
+    gboolean abort = FALSE;
 
     // determine when it's time to push
     GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
-    GstClockTime base_time =
-        gst_element_get_base_time(GST_ELEMENT(state->plugin));
+    if (clock) {
+      const GstClockTime base_time =
+          gst_element_get_base_time(GST_ELEMENT(state->plugin));
 
-    const GstClockTime pts = GST_BUFFER_PTS(outbuf);
-    const GstClockTime abs_time = pts + base_time;
+      const GstClockTime pts = GST_BUFFER_PTS(outbuf);
+      const GstClockTime abs_time = pts + base_time;
 
-    wait_start = gst_clock_get_time(clock);
-    frame_wait = GST_CLOCK_DIFF(wait_start, abs_time);
-    used_wait = 0;
-    gboolean abort = FALSE;
+      GstClockTimeDiff remaining_wait =
+          GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
 
-    // interruptable wait, continues when ring buffer read pointer is overtaken
-    // by write pointer while waiting
-    while (used_wait < frame_wait) {
+      // interruptable wait, continues when ring buffer read pointer is
+      // overtaken by write pointer while waiting
+      while (remaining_wait > GST_USECOND) {
+        if (!g_atomic_int_get(&state->running)) {
+          abort = TRUE;
+          break;
+        }
 
-      abort = !g_atomic_int_get(&state->running);
-      if (abort) {
-        break;
+        // wait until it's time to push or another buffer is queued
+        // (microseconds!)
+        g_cond_wait_until(&state->push_queue_cond, &state->push_queue_mutex,
+                          g_get_monotonic_time() + remaining_wait / 1000);
+
+        // have we been overtaken ?
+        if (state->push_queue[state->push_queue_read_idx] != outbuf) {
+          abort = TRUE;
+          break;
+        }
+        remaining_wait = GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
       }
-
-      // wait until it's time to push or another buffer is queued
-      // (microseconds!)
-      g_cond_wait_until(&state->buffer_push_queue_cond,
-                        &state->buffer_push_queue_mutex,
-                        g_get_real_time() + (frame_wait - used_wait) / 1000);
-      used_wait = (GstClockTimeDiff)gst_clock_get_time(clock) - wait_start;
-
-      // were we overtaken ?
-      if (state->buffer_push_queue[state->buffer_push_queue_read_idx] !=
-          outbuf) {
-        abort = TRUE;
-        break;
-      }
+      gst_object_unref(clock);
     }
-    gst_object_unref(clock);
 
     if (abort) {
       continue;
     }
 
     // now we own the buffer to push
-    state->buffer_push_queue[state->buffer_push_queue_read_idx] = NULL;
+    state->push_queue[state->push_queue_read_idx] = NULL;
 
-    g_mutex_unlock(&state->buffer_push_queue_mutex);
+    g_mutex_unlock(&state->push_queue_mutex);
 
     // push buffer downstream
     const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
+
     if (ret != GST_FLOW_OK) {
       GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
     }
-    g_mutex_lock(&state->buffer_push_queue_mutex);
+
+    g_mutex_lock(&state->push_queue_mutex);
   }
 
-  // release buffers that are still queued before cleanup thread shuts down
-  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
-    if (state->buffer_push_queue[i] != NULL) {
-      rb_queue_gl_buffer_cleanup(state, state->buffer_push_queue[i]);
-      state->buffer_push_queue[i] = NULL;
-    }
-  }
-
-  g_mutex_unlock(&state->buffer_push_queue_mutex);
+  g_mutex_unlock(&state->push_queue_mutex);
 
   return NULL;
 }
@@ -596,9 +644,11 @@ static gpointer rb_push_thread_func(gpointer user_data) {
  * @param frame_duration Frame duration.
  * @return TRUE if the buffer was pushed successfully.
  */
-GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
-                                    GstClockTime pts,
-                                    GstClockTime frame_duration) {
+static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
+                                           GstBuffer *outbuf,
+                                           const GstClockTime pts,
+                                           const GstClockTime frame_duration) {
+  g_assert(state != NULL);
 
   if (gst_buffer_get_size(outbuf) == 0) {
     GST_WARNING_OBJECT(state->plugin, "Empty or invalid buffer, dropping.");
@@ -615,7 +665,7 @@ GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
       // for real-time, we need to wait until it's time to push the buffer
       // dispatch the wait and push to another thread to keep rendering as fast
       // as we can (and get audio buffers)
-      rb_schedule_push_buffer(state, outbuf);
+      rb_queue_push_buffer(state, outbuf);
       ret = GST_FLOW_OK;
     } else {
       // push buffer downstream directly for offline rendering, avoid scheduling
@@ -632,12 +682,14 @@ GstFlowReturn rb_handle_send_buffer(RBRenderBuffer *state, GstBuffer *outbuf,
 }
 
 /**
- * Reset buffer references, set slot state to RB_EMPTY and signal.
+ * Reset render buffer references, set slot state to RB_EMPTY and signal.
  *
  * @param state Render buffer to use.
  * @param slot Slot to release.
  */
 static void rb_release_slot(RBRenderBuffer *state, RBSlot *slot) {
+  g_assert(state != NULL);
+
   // Lock and reset slot data
   g_mutex_lock(&state->slot_lock);
 
@@ -654,6 +706,8 @@ static void rb_release_slot(RBRenderBuffer *state, RBSlot *slot) {
 GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
                                  GstClockTime pts,
                                  GstClockTime frame_duration) {
+  g_assert(state != NULL);
+
   // Lock and reset slot data
   g_mutex_lock(&state->slot_lock);
 
@@ -669,7 +723,7 @@ GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
   rb_render_slot(state, slot);
 
   GstFlowReturn ret =
-      rb_handle_send_buffer(state, slot->out_buf, pts, frame_duration);
+      rb_handle_push_buffer(state, slot->out_buf, pts, frame_duration);
 
   // reset slot
   slot->in_audio = NULL;
@@ -683,6 +737,40 @@ GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
 }
 
 /**
+ * Clears all render slots, releases all buffers currently held, resets the
+ * render queue state and EMA state.
+ *
+ * @param state The render buffer to clear.
+ */
+static void rb_clear_slots(RBRenderBuffer *state) {
+  g_assert(state != NULL);
+
+  g_mutex_lock(&state->slot_lock);
+
+  // clean up queue and state
+  for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
+    if (state->slots[i].state == RB_READY) {
+      if (state->slots[i].in_audio) {
+        gst_buffer_unref(state->slots[i].in_audio);
+        state->slots[i].in_audio = NULL;
+      }
+      if (state->slots[i].out_buf) {
+        rb_queue_gl_buffer_cleanup(state, state->slots[i].out_buf);
+        state->slots[i].out_buf = NULL;
+      }
+      state->slots[i].state = RB_EMPTY;
+    }
+  }
+
+  state->render_write_idx = -1;
+  state->render_read_idx = -1;
+  state->ema_frame_counter = 0;
+  state->ema_smoothed_render_time = 0;
+
+  g_mutex_unlock(&state->slot_lock);
+}
+
+/**
  * Render thread main worker function.
  *
  * @param user_data Render buffer to work on.
@@ -691,6 +779,8 @@ GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
 static gpointer rb_render_thread_func(gpointer user_data) {
 
   RBRenderBuffer *state = (RBRenderBuffer *)user_data;
+  g_assert(state != NULL);
+
 #if NUM_RENDER_SLOTS > 2
   GstClockTime last_pts = GST_CLOCK_TIME_NONE;
 #endif
@@ -702,12 +792,12 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     // first find a slot with data that's ready to render
     gboolean found_slot = FALSE;
     RBSlot *slot = NULL;
-    gint render_index;
+    gint render_index = 0;
 
     g_mutex_lock(&state->slot_lock);
 
     while (!found_slot) {
-      render_index = (state->last_render_index + 1) % NUM_RENDER_SLOTS;
+      render_index = (state->render_read_idx + 1) % NUM_RENDER_SLOTS;
 
       slot = &state->slots[render_index];
 
@@ -743,7 +833,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     }
 
     // update read maker
-    state->last_render_index = render_index;
+    state->render_read_idx = render_index;
 #if NUM_RENDER_SLOTS > 2
     last_pts = slot->pts;
 #endif
@@ -758,17 +848,22 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     if (state->is_realtime) {
       GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
       if (clock) {
+        // get current running time / pts
         GstClockTime base_time =
             gst_element_get_base_time(GST_ELEMENT(state->plugin));
-        GstClockTime now = gst_clock_get_time(clock) - base_time;
+
+        const GstClockTime running_time =
+            GST_CLOCK_DIFF(base_time, gst_clock_get_time(clock));
 
         // wait if we're too far ahead
-        if (now < (GstClockTimeDiff)slot->pts - slot->frame_duration) {
-          gst_clock_id_wait(
-              gst_clock_new_single_shot_id(clock, base_time + slot->pts), NULL);
+        if (running_time + slot->frame_duration < slot->pts) {
+          GstClockID id =
+              gst_clock_new_single_shot_id(clock, base_time + slot->pts);
+          gst_clock_id_wait(id, NULL);
+          gst_clock_id_unref(id);
         }
+        gst_object_unref(clock);
       }
-      gst_object_unref(clock);
     }
 
     // perform gl rendering
@@ -787,7 +882,7 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     rb_release_slot(state, slot);
 
     // send out buffer downstream
-    if (rb_handle_send_buffer(state, outbuf, pts, frame_duration) ==
+    if (rb_handle_push_buffer(state, outbuf, pts, frame_duration) ==
         GST_FLOW_OK) {
 
       // process rendering fps QoS in case frame was pushed
@@ -806,27 +901,34 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     }
   }
 
-  g_mutex_lock(&state->slot_lock);
-  for (guint i = 0; i < NUM_RENDER_SLOTS; i++) {
-    if (state->slots[i].state == RB_READY) {
-      if (state->slots[i].in_audio) {
-        gst_buffer_unref(state->slots[i].in_audio);
-        state->slots[i].in_audio = NULL;
-      }
-      if (state->slots[i].out_buf) {
-        rb_queue_gl_buffer_cleanup(state, state->slots[i].out_buf);
-        state->slots[i].out_buf = NULL;
-      }
-      state->slots[i].state = RB_EMPTY;
-    }
-  }
-  g_mutex_unlock(&state->slot_lock);
-
   return NULL;
+}
+
+static void rb_clear_cleanup_queue(RBRenderBuffer *state) {
+  g_assert(state != NULL);
+  // make sure all gl buffers are released
+  gpointer item;
+  while ((item = g_async_queue_try_pop(state->buffer_cleanup_queue)) != NULL) {
+    gst_gl_context_thread_add(state->gl_context, gl_buffer_cleanup, item);
+  }
+}
+
+/**
+ * Clears all queues.
+ *
+ * @param state Render buffer to clear.
+ */
+void rb_clear(RBRenderBuffer *state) {
+  g_assert(state != NULL);
+
+  rb_clear_slots(state);
+  rb_clear_push_queue(state);
+  rb_clear_cleanup_queue(state);
 }
 
 void rb_start(RBRenderBuffer *state, GstGLContext *gl_context,
               GstPad *src_pad) {
+  g_assert(state != NULL);
   state->gl_context = gl_context;
   state->src_pad = src_pad;
   g_atomic_int_set(&state->running, TRUE);
@@ -845,22 +947,34 @@ void rb_start(RBRenderBuffer *state, GstGLContext *gl_context,
 }
 
 void rb_stop(RBRenderBuffer *state) {
+  g_assert(state != NULL);
 
   g_atomic_int_set(&state->running, FALSE);
 
   // threads are not needed for offline rendering
   if (state->is_realtime) {
+    // wake up render thread to signal loop exit
     g_mutex_lock(&state->slot_lock);
     g_cond_broadcast(&state->render_queued_cond);
     g_mutex_unlock(&state->slot_lock);
 
+    // wait for render thread to exit
     g_thread_join(state->render_thread);
+    state->render_thread = NULL;
 
-    rb_schedule_push_buffer(state, NULL);
+    // signal wake up push thread to singal loop exit
+    g_mutex_lock(&state->push_queue_mutex);
+    g_cond_broadcast(&state->push_queue_cond);
+    g_mutex_unlock(&state->push_queue_mutex);
+
+    // wait for push thread to exit
     g_thread_join(state->push_thread);
+    state->push_thread = NULL;
 
+    // signal and wait for cleanup thread to exit
     g_async_queue_push(state->buffer_cleanup_queue, RB_Q_SHUTDOWN_SIGNAL);
     g_thread_join(state->cleanup_thread);
+    state->cleanup_thread = NULL;
   }
 
   state->gl_context = NULL;
@@ -870,6 +984,8 @@ void rb_stop(RBRenderBuffer *state) {
 
 void rb_set_caps_frame_duration(RBRenderBuffer *state,
                                 const GstClockTime caps_frame_duration) {
+  g_assert(state != NULL);
+
   g_mutex_lock(&state->slot_lock);
   state->caps_frame_duration = caps_frame_duration;
   g_mutex_unlock(&state->slot_lock);

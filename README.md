@@ -57,15 +57,15 @@ The documentation has been organized into distinct files, each dedicated to a sp
 - **[OSX](docs/OSX.md)**
 - **[Windows](docs/WINDOWS.md)**
 
-Once the plugin has been installed, you can use it something like this to render in real-time to an OpenGL window:
+Once the plugin has been installed, you can use it something like this to render to an OpenGL window:
 
 ```shell
-gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
+gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=10 mesh-size=48,32 ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
 ```
 
 To render from a live source in real-time to a gl window, an identity element can be used to provide a proper timestamp source for the pipeline. This example also includes a texture directory: 
 ```shell
-gst-launch souphttpsrc location=http://your-radio-stream is-live=true ! queue ! decodebin ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! identity single-segment=true sync=true ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 texture-dir=/usr/local/share/projectM/presets-milkdrop-texture-pack ! video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1 ! glimagesink sync=false
+gst-launch souphttpsrc location=http://your-radio-stream is-live=true ! queue ! decodebin ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! identity single-segment=true sync=true ! projectm preset=/usr/local/share/projectM/presets preset-duration=5 mesh-size=48,32 is-live=true texture-dir=/usr/local/share/projectM/presets-milkdrop-texture-pack ! video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1 ! glimagesink sync=false
 ```
 
 Or to convert an audio file to video using offline rendering:
@@ -77,7 +77,7 @@ filesrc location=input.mp3 ! decodebin name=dec \
       t. ! queue ! audioconvert ! audioresample ! \
             capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! avenc_aac bitrate=256000 ! queue ! mux. \
       t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! \
-           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 is-live=false ! \
             identity sync=false ! videoconvert ! videorate ! video/x-raw\(memory:GLMemory\),framerate=60/1,width=3840,height=2160 ! \
             gldownload \
             x264enc bitrate=35000 key-int-max=300 speed-preset=veryslow ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
@@ -93,7 +93,7 @@ gst-launch-1.0 -e \
             capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! \
             avenc_aac bitrate=320000 ! queue ! mux. \
       t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! projectm \
-            preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+            preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 is-live=false ! \
             identity sync=false ! videoconvert ! videorate ! \
             video/x-raw\(memory:GLMemory\),framerate=60/1,width=1920,height=1080 ! \
             nvh264enc ! h264parse ! \
@@ -230,7 +230,7 @@ gst-launch-1.0 -e \
       t. ! queue ! audioconvert ! audioresample ! \
             capsfilter caps="audio/x-raw, format=F32LE, channels=2, rate=44100" ! avenc_aac bitrate=256000 ! queue ! mux. \
       t. ! queue ! audioconvert ! capsfilter caps="audio/x-raw, format=S16LE, channels=2, rate=44100" ! \
-           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 ! \
+           projectm preset=/usr/local/share/projectM/presets preset-duration=3 mesh-size=1024,576 is-live=false ! \
             identity sync=false ! videoconvert ! videorate ! video/x-raw\(memory:GLMemory\),framerate=60/1,width=3840,height=2160 ! \
             gldownload \
             x264enc bitrate=35000 key-int-max=300 speed-preset=veryslow ! video/x-h264,stream-format=avc,alignment=au ! queue ! mux. \
@@ -249,15 +249,15 @@ gst-inspect projectm
 
 ## Technical Details
 
-### 🖼️ OpenGL Rendering and Buffer Handling
+### OpenGL Rendering and Buffer Handling
 
 - projectM output is rendered to OpenGL textures via **Frame Buffer Object (FBO)**.
-- **Textures are pooled** and reused across frames to avoid excessive GPU memory allocation and de-allocation.
+- **Textures are pooled** and reused across frames. 
 - Each rendered texture becomes a GStreamer video buffer pushed downstream. **All video buffers stay in GPU memory**.
 
 ---
 
-### ⏱️ Timing and Synchronization
+### Timing and Synchronization
 
 The plugin synchronizes rendering to the GStreamer pipeline clock using **audio presentation timestamp (PTS) as the leading reference**.
 
@@ -266,9 +266,11 @@ GStreamer's pipeline timing concept, and to enable faster-than-real-time renderi
 A **fixed number of audio samples is consumed per video frame**. 
 
 **Example:** `735 samples per frame at 44.1 kHz = ~60 FPS.`
- 
 
-Real-time pipelines only: Frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
+**Note:** Live pipelines are auto-detected by the plugin. For cases where auto-detection is not appropriate,
+the `is-live` property can be configured.
+
+**Live pipelines only:** Frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
 pipeline caps FPS.
 
 Video frame PTS offset is derived from the **first audio buffer PTS** or **segment event** plus accumulated samples to align with audio timing.
@@ -279,10 +281,10 @@ Video frame PTS offset is derived from the **first audio buffer PTS** or **segme
 | Audio Timestamps                 | Audio Input        | Always           | Determine video timing and sync.                                                                  |
 | Sample Rate / Pipeline FPS       | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                                 |
 | Segment Info                     | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                                  |
-| QoS Feedback                     | QoS Event          | Real-time        | Skips outdated frames to reduce latency.                                                          |
-| Render Frame Drop                | Render Loop        | Real-time        | Drop frames that cannot be rendered in time.                                                      |
-| Exponential Moving Average (EMA) | Render Loop        | Real-time        | Adjust plugin target FPS in case frame render time exceeds the real-time budget most of the time. |
-| Latency Event                    | Render Loop        | Real-time        | Inform upstream of latency changes in case of adaptive FPS changes (EMA).                         |
+| QoS Feedback                     | QoS Event          | Live             | Skips outdated frames to reduce latency.                                                          |
+| Render Frame Drop                | Render Loop        | Live             | Drop frames that cannot be rendered in time.                                                      |
+| Exponential Moving Average (EMA) | Render Loop        | Live             | Adjust plugin target FPS in case frame render time exceeds the real-time budget most of the time. |
+| Latency Event                    | Render Loop        | Live             | Inform upstream of latency changes in case of adaptive FPS changes (EMA).                         |
 
 
 ---

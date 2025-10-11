@@ -1,17 +1,32 @@
 /*
- * A ring buffer based render buffer to allow offloading of
- * rendering tasks from the plugin chain function. The ring buffer consists of
- * a limited number of rendering slots.
+ * Utility to allow offloading of rendering tasks from the plugin chain
+ * function.
+ *
+ * Functionality provided:
+ * - A ring buffer based rendering task queue with a limited number of rendering
+ *   slots. It is being consumed by a dedicated thread (render thread) to
+ *   dispatch rendering to the GL thread.
+ *
+ * - A ring buffer based GL buffer queue to schedule GL buffers to be pushed
+ *   downstream at presentation time. It is being consumed by a dedicated thread
+ *   (push thread).
+ *
+ * - An async queue to dispose of dropped GL buffers. It is being consumed by
+ *   a dedicated thread (cleanup thread) to dispatch GL buffer cleanup to the GL
+ *   thread.
  *
  *  For offline pipelines only:
  *
- * - A blocking call is used for rendering, bypasses queuing.
+ *  - A blocking call is used for rendering, bypassing queuing. GL buffers are
+ *    never dropped.
+ *
+ * ---
  *
  *  For real-time pipelines only:
  *
- * The buffer provides queueing for audio buffers to be rendered to video
- * frames. It uses a bound-wait-on-full approach to avoid dropping frames when
- * rendering duration exceeds the frame duration of the current fps:
+ * - The buffer provides queueing for audio buffers to be rendered to video
+ *   frames. It uses a bound-wait-on-full approach to avoid dropping frames when
+ *   rendering duration exceeds the frame duration of the current fps:
  *
  * - In case a free slot is available queue
  *   immediately and return (async rendering).
@@ -30,22 +45,22 @@
  *
  * ---
  *
- *  - If the render duration exceeds the fps *sometimes*, subsequent
- *    faster-than-real-time rendered frames (if any) compensate for the small
- *    lag, frames are dropped or eventually QoS events from the downstream
- *    sink will re-sync with the pipeline clock.
+ * - If the render duration exceeds the fps *sometimes*, subsequent
+ *   faster-than-real-time rendered frames (if any) compensate for the small
+ *   lag, frames are dropped or eventually QoS events from the downstream
+ *   sink will re-sync with the pipeline clock.
  *
- *  - If the render duration exceeds the fps *most of the time*, an Exponential
- *    Moving Average (EMA) based algorithm instructs the plugin to reduce fps.
- *    EMA will also recover fps when render performance increases again.
+ * - If the render duration exceeds the fps *most of the time*, an Exponential
+ *   Moving Average (EMA) based algorithm instructs the plugin to reduce fps.
+ *   EMA will also recover fps when render performance increases again.
  *
- *  - Buffers that completed rendering are scheduled to be pushed to the source
- *    pad at PTS. A ring buffer queues buffers for pushing. The buffer acts like
- *    a blocking queue with scheduling wait. A separate worker thread consumes
- *    the ring buffer and waits for reaching the PTS of the current buffer. The
- *    wait is interruptable, in case the read pointer is overtaken by the write
- *    pointer, waiting for PTS is aborted and the next frame is scheduled
- *    immediately.
+ * - GL buffers that completed rendering are scheduled to be pushed to the
+ *   source pad at presentation time (PTS). The queue implemented as a ring
+ *   buffer that acts like a blocking queue with scheduling wait. A separate
+ *   worker thread consumes the ring buffer and waits for reaching the PTS of
+ *   the current GL buffer. The wait is interruptable, in case the read pointer
+ *   is overtaken by the write pointer, waiting for PTS is aborted and the next
+ *   frame is scheduled immediately.
  */
 
 #ifndef __RENDERBUFFER_H__
@@ -233,27 +248,17 @@ typedef struct {
   /**
    * Ring buffer to schedule gl buffers for pushing.
    */
-  GstBuffer *buffer_push_queue[PUSH_QUEUE_MAX_SIZE];
-
-  /**
-   * Push ring buffer write position.
-   */
-  gint buffer_push_queue_write_idx;
-
-  /**
-   * Push ring buffer read position.
-   */
-  gint buffer_push_queue_read_idx;
+  GstBuffer *push_queue[PUSH_QUEUE_MAX_SIZE];
 
   /**
    * Mutex for push ring buffer.
    */
-  GMutex buffer_push_queue_mutex;
+  GMutex push_queue_mutex;
 
   /**
-   * Condition as interruptable scheduling clock for push ring buffer.
+   * Condition signaled when a buffer has been queued.
    */
-  GCond buffer_push_queue_cond;
+  GCond push_queue_cond;
 
   /**
    * Queue to dispose of dropped gl buffers.
@@ -274,7 +279,7 @@ typedef struct {
   // --------------------------------------------------------------
 
   /**
-   * TRUE if render thread is currently running.
+   * TRUE if rendering is currently running.
    */
   gboolean running;
 
@@ -315,31 +320,44 @@ typedef struct {
    */
   RBSlot slots[NUM_RENDER_SLOTS];
 
-  // only used by the calling thread (chain function)
+  // only used by the calling thread (chain function) / clean up
   // --------------------------------------------------------------
 
   /**
    * Last index that data was inserted at (insertion pointer).
    */
-  gint last_insert_index;
+  gint render_write_idx;
 
-  // only used by the render thread
+  // only used by the render thread / clean up
   // --------------------------------------------------------------
 
   /**
    * Last index that data was rendered from (read pointer).
    */
-  gint last_render_index;
+  gint render_read_idx;
 
   /**
    * EMA frame counter.
    */
-  guint frame_counter;
+  guint ema_frame_counter;
 
   /**
    * EMA running average.
    */
-  guint64 smoothed_render_time;
+  guint64 ema_smoothed_render_time;
+
+  // concurrent access, protected by push_queue_mutex
+  // --------------------------------------------------------------
+
+  /**
+   * Push ring buffer write position.
+   */
+  gint push_queue_write_idx;
+
+  /**
+   * Push ring buffer read position.
+   */
+  gint push_queue_read_idx;
 
 } RBRenderBuffer;
 
@@ -450,6 +468,13 @@ GstFlowReturn rb_render_blocking(RBRenderBuffer *state, GstBuffer *in_audio,
 static gboolean rb_is_render_too_late(GstElement *element, GstClockTime latency,
                                       GstClockTime running_time,
                                       GstClockTime tolerance);
+
+/**
+ * Clears all queues.
+ *
+ * @param state Render buffer to clear.
+ */
+void rb_clear(RBRenderBuffer *state);
 
 /**
  * Start render loop.
