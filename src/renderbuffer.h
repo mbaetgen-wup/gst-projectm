@@ -67,20 +67,20 @@ G_BEGIN_DECLS
  *
  * Valid values:
  *  1 - Wait for previous render to complete before scheduling.
- *  2 - Render and schedule one item and at the same time.
+ *  2 - Render one item and schedule another at the same time.
  */
 #ifndef NUM_RENDER_SLOTS
 #define NUM_RENDER_SLOTS 2
 #endif
 
 /**
- * Max number of frames waiting in a scheduled state to be pushed.
- * Should be short, will drop frames if newer frame are queued, last frame wins.
- * Render loop is real-time capped, there should not be a lot of buffers
- * waiting.
+ * Max number of gl frame buffers waiting in a scheduled state to be pushed.
+ * Capacity should be low. Frames will be dropped if newer frame are queued,
+ * last frame wins. Render loop is capped for real-time, there should not be a
+ * lot of buffers waiting.
  */
 #ifndef PUSH_QUEUE_MAX_SIZE
-#define PUSH_QUEUE_MAX_SIZE 2
+#define PUSH_QUEUE_MAX_SIZE 3
 #endif
 
 /**
