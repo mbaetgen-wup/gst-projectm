@@ -524,6 +524,7 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
 
 static gboolean gst_gl_base_audio_visualizer_default_fill_gl_memory(
     GstAVRenderParams *render_data) {
+  (void)render_data;
   return TRUE;
 }
 

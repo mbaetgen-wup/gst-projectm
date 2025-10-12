@@ -7,7 +7,7 @@
  *   slots. It is being consumed by a dedicated thread (render thread) to
  *   dispatch rendering to the GL thread.
  *
- * - A ring buffer based GL buffer queue to schedule GL buffers to be pushed
+ * - A ring buffer based queue to schedule GL buffers to be pushed
  *   downstream at presentation time. It is being consumed by a dedicated thread
  *   (push thread).
  *
@@ -56,11 +56,10 @@
  *
  * - GL buffers that completed rendering are scheduled to be pushed to the
  *   source pad at presentation time (PTS). The queue implemented as a ring
- *   buffer that acts like a blocking queue with scheduling wait. A separate
- *   worker thread consumes the ring buffer and waits for reaching the PTS of
- *   the current GL buffer. The wait is interruptable, in case the read pointer
- *   is overtaken by the write pointer, waiting for PTS is aborted and the next
- *   frame is scheduled immediately.
+ *   buffer that blocks on insert in case it is at capacity until the buffer
+ *   can be scheduled. The render loop is throttled by waiting on a free slot.
+ *   A separate worker thread consumes the ring buffer and waits for reaching
+ *   the PTS of the current GL buffer before pushing it downstream.
  */
 
 #ifndef __RENDERBUFFER_H__
@@ -90,12 +89,11 @@ G_BEGIN_DECLS
 
 /**
  * Max number of gl frame buffers waiting in a scheduled state to be pushed.
- * Capacity should be low. Frames will be dropped if newer frame are queued,
- * last frame wins. Render loop is capped for real-time, there should not be a
- * lot of buffers waiting.
+ * Capacity should be low. Queuing call will block when capacity is reached and
+ * throttle the render loop, frames are never dropped.
  */
 #ifndef PUSH_QUEUE_MAX_SIZE
-#define PUSH_QUEUE_MAX_SIZE 3
+#define PUSH_QUEUE_MAX_SIZE 2
 #endif
 
 /**
@@ -259,6 +257,12 @@ typedef struct {
    * Condition signaled when a buffer has been queued.
    */
   GCond push_queue_cond;
+
+  /**
+   * Condition signaled when a buffer has been pushed
+   * and a slot if free.
+   */
+  GCond push_queue_free_cond;
 
   /**
    * Queue to dispose of dropped gl buffers.
