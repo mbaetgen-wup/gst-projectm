@@ -25,42 +25,57 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
  */
 #ifndef RB_EMA_ALPHA_N
 #define RB_EMA_ALPHA_N 1
+#endif
+
+#ifndef RB_EMA_ALPHA_D
 #define RB_EMA_ALPHA_D 5
 #endif
 
 /**
- * Increase frame duration (slow down fps) in case of detected lag.
+ * EMA increase frame duration (slow down fps) in case of detected lag.
  * +20%
  */
 #ifndef RB_EMA_FRAME_DURATION_INCREASE_N
 #define RB_EMA_FRAME_DURATION_INCREASE_N 12
+#endif
+
+#ifndef RB_EMA_FRAME_DURATION_INCREASE_D
 #define RB_EMA_FRAME_DURATION_INCREASE_D 10
 #endif
 
 /**
- * Decrease frame duration (speed up fps) in case rendering performance
+ * EMA decrease frame duration (speed up fps) in case rendering performance
  * recovers. -5%
  */
 #ifndef RB_EMA_FRAME_DURATION_DECREASE_N
 #define RB_EMA_FRAME_DURATION_DECREASE_N 95
+#endif
+
+#ifndef RB_EMA_FRAME_DURATION_DECREASE_D
 #define RB_EMA_FRAME_DURATION_DECREASE_D 100
 #endif
 
 /**
- * Tolerance for being too slow.
+ * EMA tolerance for being too slow.
  * Allow render time up to 1.1x
  */
 #ifndef RB_EMA_FRAME_DURATION_TOLERANCE_UP_N
 #define RB_EMA_FRAME_DURATION_TOLERANCE_UP_N 110
+#endif
+
+#ifndef RB_EMA_FRAME_DURATION_TOLERANCE_UP_D
 #define RB_EMA_FRAME_DURATION_TOLERANCE_UP_D 100
 #endif
 
 /**
- * Tolerance for being too fast.
+ * EMA tolerance for being too fast.
  * allow render time as low as 0.9x
  */
 #ifndef RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N
 #define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N 95
+#endif
+
+#ifndef RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_D
 #define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_D 100
 #endif
 
@@ -229,7 +244,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   g_mutex_init(&state->push_queue_mutex);
   g_cond_init(&state->push_queue_cond);
   g_cond_init(&state->push_queue_free_cond);
-  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+  for (guint i = 0; i < PUSH_QUEUE_SIZE; i++) {
     state->push_queue[i] = NULL;
   }
 
@@ -511,6 +526,7 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
  * @return TRUE if the buffer was scheduled successfully, FALSE in case the
  *         buffer was stopped.
  */
+#if PUSH_QUEUE_SIZE > 0
 static gboolean rb_queue_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
   g_assert(state != NULL);
   g_assert(buffer != NULL);
@@ -519,7 +535,7 @@ static gboolean rb_queue_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
 
   // write to the next position in the ring
   state->push_queue_write_idx =
-      (state->push_queue_write_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+      (state->push_queue_write_idx + 1) % PUSH_QUEUE_SIZE;
 
   gboolean result = TRUE;
   while (state->push_queue[state->push_queue_write_idx] != NULL) {
@@ -540,18 +556,20 @@ static gboolean rb_queue_push_buffer(RBRenderBuffer *state, GstBuffer *buffer) {
 
   return result;
 }
+#endif
 
 /**
  * Removes and disposes all queued buffers and resets queue state.
  *
  * @param state State to clear.
  */
+#if PUSH_QUEUE_SIZE > 0
 static void rb_clear_push_queue(RBRenderBuffer *state) {
   g_assert(state != NULL);
   g_mutex_lock(&state->push_queue_mutex);
 
   // release buffers that are still queued before cleanup thread shuts down
-  for (guint i = 0; i < PUSH_QUEUE_MAX_SIZE; i++) {
+  for (guint i = 0; i < PUSH_QUEUE_SIZE; i++) {
     if (state->push_queue[i] != NULL) {
       rb_queue_gl_buffer_cleanup(state, state->push_queue[i]);
       state->push_queue[i] = NULL;
@@ -562,6 +580,7 @@ static void rb_clear_push_queue(RBRenderBuffer *state) {
 
   g_mutex_unlock(&state->push_queue_mutex);
 }
+#endif
 
 /**
  * Pushes gl buffers for real-time rendering only.
@@ -570,6 +589,7 @@ static void rb_clear_push_queue(RBRenderBuffer *state) {
  * @param user_data Render buffer to use.
  * @return NULL
  */
+#if PUSH_QUEUE_SIZE > 0
 static gpointer rb_push_thread_func(gpointer user_data) {
 
   RBRenderBuffer *state = (RBRenderBuffer *)user_data;
@@ -580,7 +600,7 @@ static gpointer rb_push_thread_func(gpointer user_data) {
   while (g_atomic_int_get(&state->running)) {
 
     state->push_queue_read_idx =
-        (state->push_queue_read_idx + 1) % PUSH_QUEUE_MAX_SIZE;
+        (state->push_queue_read_idx + 1) % PUSH_QUEUE_SIZE;
 
     // consume gl buffer to push
     gboolean stop = FALSE;
@@ -640,11 +660,13 @@ static gpointer rb_push_thread_func(gpointer user_data) {
 
   return NULL;
 }
+#endif
 
 /**
  * Send a video buffer to the source pad downstream.
  * Buffer is checked and timestamps are populated before sending.
- * Push is blocking for offline rendering, and queued for real-time rendering.
+ * Push is blocking for offline rendering, and for real-time rendering queued if
+ * capacity is available, otherwise blocking.
  *
  * @param state Render buffer to use.
  * @param outbuf Video buffer to send downstream (takes ownership).
@@ -669,6 +691,7 @@ static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
 
     GstFlowReturn ret;
     if (state->is_realtime) {
+#if PUSH_QUEUE_SIZE > 0
       // for real-time, we need to wait until it's time to push the buffer
       // dispatch to queue may block until capacity is available
       gboolean result = rb_queue_push_buffer(state, outbuf);
@@ -679,13 +702,32 @@ static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
         ret = GST_FLOW_ERROR;
       }
     } else {
-      // push buffer downstream directly for offline rendering, avoid scheduling
-      // overhead
+#else
+      // blocking wait until buffer has been pushed in time
+      // then push directly
+      GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
+      if (clock) {
+        const GstClockTime base_time =
+            gst_element_get_base_time(GST_ELEMENT(state->plugin));
+
+        const GstClockTime abs_time = pts + base_time;
+
+        GstClockID clock_id = gst_clock_new_single_shot_id(clock, abs_time);
+        gst_clock_id_wait(clock_id, NULL);
+        gst_clock_id_unref(clock_id);
+      }
+      gst_object_unref(clock);
+    }
+#endif
+      // push buffer downstream directly for offline rendering or if
+      // queuing is disabled
       ret = gst_pad_push(state->src_pad, outbuf);
       if (ret != GST_FLOW_OK) {
         GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
       }
+#if PUSH_QUEUE_SIZE > 0
     }
+#endif
     return ret;
   }
 
@@ -818,8 +860,8 @@ static gpointer rb_render_thread_func(gpointer user_data) {
       if (slot->state == RB_READY
 #if NUM_RENDER_SLOTS > 2
           // wontfix: segment events would need to be handled for this check to
-          // work right otherwise last_pts is not reset when the pts changes.
-          // if this is ever desired, each queued frame should have an
+          // work right otherwise last_pts is not reset when the pts offset
+          // changes. If this is ever desired, each queued frame should have an
           // incrementing id field to use for this check
 
           // check if next frame is already outdated, may happen if write
@@ -871,6 +913,8 @@ static gpointer rb_render_thread_func(gpointer user_data) {
     rb_release_slot(state, slot);
 
     // send out buffer downstream
+    // call will block if rendering is running ahead
+    // and throttle render loop
     if (rb_handle_push_buffer(state, outbuf, pts, frame_duration) ==
         GST_FLOW_OK) {
 
@@ -911,7 +955,9 @@ void rb_clear(RBRenderBuffer *state) {
   g_assert(state != NULL);
 
   rb_clear_slots(state);
+#if PUSH_QUEUE_SIZE > 0
   rb_clear_push_queue(state);
+#endif
   rb_clear_cleanup_queue(state);
 }
 
@@ -926,8 +972,10 @@ void rb_start(RBRenderBuffer *state, GstGLContext *gl_context,
   if (state->is_realtime) {
     state->render_thread =
         g_thread_new("rb-render-thread", rb_render_thread_func, state);
+#if PUSH_QUEUE_SIZE > 0
     state->push_thread =
         g_thread_new("rb-push-thread", rb_push_thread_func, state);
+#endif
     state->cleanup_thread =
         g_thread_new("rb-cleanup-thread", rb_cleanup_thread_func, state);
   }
@@ -951,15 +999,16 @@ void rb_stop(RBRenderBuffer *state) {
     g_thread_join(state->render_thread);
     state->render_thread = NULL;
 
-    // signal wake up push thread to singal loop exit
+#if PUSH_QUEUE_SIZE > 0
+    // signal wake up push thread to signal loop exit
     g_mutex_lock(&state->push_queue_mutex);
     g_cond_broadcast(&state->push_queue_cond);
     g_cond_broadcast(&state->push_queue_free_cond);
     g_mutex_unlock(&state->push_queue_mutex);
-
     // wait for push thread to exit
     g_thread_join(state->push_thread);
     state->push_thread = NULL;
+#endif
 
     // signal and wait for cleanup thread to exit
     g_async_queue_push(state->buffer_cleanup_queue, RB_Q_SHUTDOWN_SIGNAL);

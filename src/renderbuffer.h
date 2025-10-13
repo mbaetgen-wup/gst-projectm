@@ -15,6 +15,8 @@
  *   a dedicated thread (cleanup thread) to dispatch GL buffer cleanup to the GL
  *   thread.
  *
+ * ---
+ *
  *  For offline pipelines only:
  *
  *  - A blocking call is used for rendering, bypassing queuing. GL buffers are
@@ -43,12 +45,10 @@
  *     with the current frame (evicted), meaning the previous frame is being
  *     dropped as it is too late.
  *
- * ---
  *
  * - If the render duration exceeds the fps *sometimes*, subsequent
  *   faster-than-real-time rendered frames (if any) compensate for the small
- *   lag, frames are dropped or eventually QoS events from the downstream
- *   sink will re-sync with the pipeline clock.
+ *   lag, or frames are dropped.
  *
  * - If the render duration exceeds the fps *most of the time*, an Exponential
  *   Moving Average (EMA) based algorithm instructs the plugin to reduce fps.
@@ -76,12 +76,12 @@ G_BEGIN_DECLS
  * One slot for the gl thread to render the current frame while another slot is
  * available for queuing the next audio buffer to render.
  *
- * Note: Increasing the number of slots >2 is not fully supported.
- * GstSegments won't be handled correctly currently. See inline code comments.
+ * Note: Increasing the number of slots >2 is not fully supported since
+ * it would require handling of PTS offset changes. See inline code comments.
  *
  * Valid values:
- *  1 - Wait for previous render to complete before scheduling.
- *  2 - Render one item and schedule another at the same time.
+ *  1 : Wait for previous render to complete before scheduling.
+ *  2 : Render one item and schedule another at the same time.
  */
 #ifndef NUM_RENDER_SLOTS
 #define NUM_RENDER_SLOTS 2
@@ -89,11 +89,19 @@ G_BEGIN_DECLS
 
 /**
  * Max number of gl frame buffers waiting in a scheduled state to be pushed.
- * Capacity should be low. Queuing call will block when capacity is reached and
+ * The push queue decouples the render loop from buffer push timing, allowing
+ * the render loop to render frames ahead up to the queue capacity.
+ * Capacity should be low (1-2) to allow back-pressure from fps increases to
+ * propagate quickly. The queuing call will block when capacity is reached and
  * throttle the render loop, frames are never dropped.
+ *
+ * 0  : Disable push queuing, block render loop directly until PTS of current
+ *      frame is reached. Disables the push queue API entirely.
+ * >0 : Allow n buffers waiting in the queue for pushing while render thread
+ *      continues.
  */
-#ifndef PUSH_QUEUE_MAX_SIZE
-#define PUSH_QUEUE_MAX_SIZE 2
+#ifndef PUSH_QUEUE_SIZE
+#define PUSH_QUEUE_SIZE 1
 #endif
 
 /**
@@ -246,7 +254,7 @@ typedef struct {
   /**
    * Ring buffer to schedule gl buffers for pushing.
    */
-  GstBuffer *push_queue[PUSH_QUEUE_MAX_SIZE];
+  GstBuffer *push_queue[PUSH_QUEUE_SIZE];
 
   /**
    * Mutex for push ring buffer.
