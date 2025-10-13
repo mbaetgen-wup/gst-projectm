@@ -3,6 +3,8 @@
 #include "config.h"
 #endif
 
+#include <math.h>
+
 #include "renderbuffer.h"
 
 GST_DEBUG_CATEGORY_STATIC(renderbuffer_debug);
@@ -21,7 +23,7 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
 #endif
 
 /**
- * EMA alpha = 0.25
+ * EMA alpha = 0.2
  */
 #ifndef RB_EMA_ALPHA_N
 #define RB_EMA_ALPHA_N 1
@@ -33,14 +35,14 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
 
 /**
  * EMA increase frame duration (slow down fps) in case of detected lag.
- * +20%
+ * +15%
  */
 #ifndef RB_EMA_FRAME_DURATION_INCREASE_N
-#define RB_EMA_FRAME_DURATION_INCREASE_N 12
+#define RB_EMA_FRAME_DURATION_INCREASE_N 115
 #endif
 
 #ifndef RB_EMA_FRAME_DURATION_INCREASE_D
-#define RB_EMA_FRAME_DURATION_INCREASE_D 10
+#define RB_EMA_FRAME_DURATION_INCREASE_D 100
 #endif
 
 /**
@@ -69,7 +71,7 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
 
 /**
  * EMA tolerance for being too fast.
- * allow render time as low as 0.9x
+ * allow render time as low as 0.95x
  */
 #ifndef RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N
 #define RB_EMA_FRAME_DURATION_TOLERANCE_DOWN_N 95
@@ -85,7 +87,7 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
  * a defined max run-time of the scheduling process.
  */
 #ifndef MIN_FREE_SLOT_SCHEDULE_WAIT
-#define MIN_FREE_SLOT_SCHEDULE_WAIT (GST_MSECOND * 1)
+#define MIN_FREE_SLOT_SCHEDULE_WAIT GST_MSECOND
 #endif
 
 /**
@@ -94,7 +96,21 @@ static gpointer RB_Q_SHUTDOWN_SIGNAL = &RB_Q_SHUTDOWN_SIGNAL;
  * skipped.
  */
 #ifndef MIN_PUSH_SCHEDULE_WAIT
-#define MIN_PUSH_SCHEDULE_WAIT (GST_USECOND * 20)
+#define MIN_PUSH_SCHEDULE_WAIT (GST_USECOND * 50)
+#endif
+
+/**
+ * EMA aloha for push schedule clock jitter average.
+ */
+#ifndef JITTER_EMA_ALPHA
+#define JITTER_EMA_ALPHA 0.75
+#endif
+
+/**
+ * EMA for push schedule clock jitter outlier threshold.
+ */
+#ifndef JITTER_EMA_OUTLIER_THRESHOLD
+#define JITTER_EMA_OUTLIER_THRESHOLD (5 * GST_MSECOND)
 #endif
 
 /**
@@ -251,6 +267,9 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   // init clean up queue
   state->cleanup_thread = NULL;
   state->buffer_cleanup_queue = g_async_queue_new();
+
+  state->avg_jitter = 0.0;
+  state->avg_jitter_init = FALSE;
 }
 
 void rb_dispose_render_buffer(RBRenderBuffer *state) {
@@ -452,7 +471,7 @@ gboolean rb_is_render_too_late(GstElement *element, const GstClockTime latency,
  * @param context Current gl context.
  * @param buf GL buffer to release.
  */
-static void gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
+static void rb_cb_gl_buffer_cleanup(GstGLContext *context, gpointer buf) {
   (void)context;
   gst_buffer_unref(GST_BUFFER(buf));
 }
@@ -477,7 +496,7 @@ static gpointer rb_cleanup_thread_func(gpointer user_data) {
     if (!item || item == RB_Q_SHUTDOWN_SIGNAL)
       continue;
 
-    gst_gl_context_thread_add(state->gl_context, gl_buffer_cleanup, item);
+    gst_gl_context_thread_add(state->gl_context, rb_cb_gl_buffer_cleanup, item);
   }
   return NULL;
 }
@@ -583,6 +602,44 @@ static void rb_clear_push_queue(RBRenderBuffer *state) {
 #endif
 
 /**
+ * Calculate current clock jitter average.
+ *
+ * @param state Current render buffer.
+ * @param jitter Latest jitter value.
+ */
+static void rb_calculate_avg_jitter(RBRenderBuffer *state,
+                                    GstClockTimeDiff jitter) {
+  // Ignore outliers
+  if (ABS(jitter) > JITTER_EMA_OUTLIER_THRESHOLD)
+    return;
+
+  if (!state->avg_jitter_init) {
+    state->avg_jitter = (gdouble)jitter;
+    state->avg_jitter_init = TRUE;
+  } else {
+    state->avg_jitter = JITTER_EMA_ALPHA * state->avg_jitter +
+                        (1.0 - JITTER_EMA_ALPHA) * (gdouble)jitter;
+  }
+}
+
+/**
+ * Applies jitter correction to the given buffer.
+ *
+ * @param state Current render buffer.
+ * @param outbuf Buffer to apply correction to.
+ */
+static void rb_jitter_correction(RBRenderBuffer *state, GstBuffer *outbuf) {
+  GstClockTime correction =
+      gst_util_uint64_scale_int((guint64)fabs(state->avg_jitter), 1, 1);
+
+  if (state->avg_jitter > 0) {
+    GST_BUFFER_PTS(outbuf) -= correction;
+  } else {
+    GST_BUFFER_PTS(outbuf) += correction;
+  }
+}
+
+/**
  * Pushes gl buffers for real-time rendering only.
  * Consume buffers to push and wait until it's PTS time to push.
  *
@@ -633,9 +690,13 @@ static gpointer rb_push_thread_func(gpointer user_data) {
           GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
 
       if (remaining_wait > MIN_PUSH_SCHEDULE_WAIT) {
+        GstClockTimeDiff jitter = 0;
         GstClockID clock_id = gst_clock_new_single_shot_id(clock, abs_time);
-        gst_clock_id_wait(clock_id, NULL);
+        gst_clock_id_wait(clock_id, &jitter);
         gst_clock_id_unref(clock_id);
+
+        // record jitter
+        rb_calculate_avg_jitter(state, jitter);
       }
 
       gst_object_unref(clock);
@@ -645,6 +706,9 @@ static gpointer rb_push_thread_func(gpointer user_data) {
     state->push_queue[state->push_queue_read_idx] = NULL;
     g_cond_signal(&state->push_queue_free_cond);
     g_mutex_unlock(&state->push_queue_mutex);
+
+    // apply wait jitter correction ro buffer
+    rb_jitter_correction(state, outbuf);
 
     // push buffer downstream
     const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
@@ -711,10 +775,14 @@ static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
             gst_element_get_base_time(GST_ELEMENT(state->plugin));
 
         const GstClockTime abs_time = pts + base_time;
+        GstClockTimeDiff jitter = 0;
 
         GstClockID clock_id = gst_clock_new_single_shot_id(clock, abs_time);
-        gst_clock_id_wait(clock_id, NULL);
+        gst_clock_id_wait(clock_id, &jitter);
         gst_clock_id_unref(clock_id);
+
+        rb_calculate_avg_jitter(state, jitter);
+        rb_jitter_correction(state, outbuf);
       }
       gst_object_unref(clock);
     }
@@ -937,17 +1005,25 @@ static gpointer rb_render_thread_func(gpointer user_data) {
   return NULL;
 }
 
+/**
+ * Release all buffers currently queued for disposal.
+ * Needs to be called from GL thread.
+ *
+ * @param state Renderbuffer owning cleanup queue to clear.
+ */
 static void rb_clear_cleanup_queue(RBRenderBuffer *state) {
   g_assert(state != NULL);
+
   // make sure all gl buffers are released
   gpointer item;
   while ((item = g_async_queue_try_pop(state->buffer_cleanup_queue)) != NULL) {
-    gst_gl_context_thread_add(state->gl_context, gl_buffer_cleanup, item);
+    rb_cb_gl_buffer_cleanup(NULL, item);
   }
 }
 
 /**
  * Clears all queues.
+ * Needs to be called from GL thread.
  *
  * @param state Render buffer to clear.
  */

@@ -371,6 +371,19 @@ typedef struct {
    */
   gint push_queue_read_idx;
 
+  // used only by either render or push thread
+  // --------------------------------------------------------------
+
+  /**
+   * EMA based clock jitter average.
+   */
+  gdouble avg_jitter;
+
+  /**
+   * Clock jitter initialized.
+   */
+  gboolean avg_jitter_init;
+
 } RBRenderBuffer;
 
 /**
@@ -483,6 +496,7 @@ static gboolean rb_is_render_too_late(GstElement *element, GstClockTime latency,
 
 /**
  * Clears all queues.
+ * Needs to be called from GL thread.
  *
  * @param state Render buffer to clear.
  */
@@ -490,6 +504,7 @@ void rb_clear(RBRenderBuffer *state);
 
 /**
  * Start render loop.
+ * Needs to be called from GL thread.
  *
  * @param state Render buffer to use.
  * @param gl_context GL context to use for rendering.
@@ -499,6 +514,7 @@ void rb_start(RBRenderBuffer *state, GstGLContext *gl_context, GstPad *src_pad);
 
 /**
  * Stop render loop. Active threads will be joined before returning.
+ * Needs to be called from GL thread.
  *
  * @param state Render buffer to use.
  */
