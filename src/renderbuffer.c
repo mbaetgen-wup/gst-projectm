@@ -194,10 +194,10 @@ static void rb_handle_adaptive_fps_ema(RBRenderBuffer *state,
   }
 }
 
-static void rb_queue_gl_buffer_cleanup(RBRenderBuffer *state, GstBuffer *out) {
+static void rb_queue_gl_buffer_cleanup(RBRenderBuffer *state, GstBuffer *buf) {
   g_assert(state != NULL);
-  g_assert(out != NULL);
-  g_async_queue_push(state->buffer_cleanup_queue, out);
+  g_assert(buf != NULL);
+  g_async_queue_push(state->buffer_cleanup_queue, buf);
 }
 
 void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
@@ -633,7 +633,7 @@ static void rb_jitter_correction(RBRenderBuffer *state, GstBuffer *outbuf) {
   if (GST_BUFFER_PTS(outbuf) != GST_CLOCK_TIME_NONE) {
     GstClockTime correction = llabs((guint64)state->avg_jitter);
 
-    if (state->avg_jitter > 0) {
+    if (state->avg_jitter > 0.0) {
       GST_BUFFER_PTS(outbuf) -= correction;
     } else {
       GST_BUFFER_PTS(outbuf) += correction;
@@ -693,6 +693,7 @@ static gpointer rb_push_thread_func(gpointer user_data) {
             GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
 
         if (remaining_wait > MIN_PUSH_SCHEDULE_WAIT) {
+          // we need to wait, unlock first
           g_mutex_unlock(&state->push_queue_mutex);
 
           GstClockTimeDiff jitter = 0;
@@ -704,6 +705,7 @@ static gpointer rb_push_thread_func(gpointer user_data) {
             // record jitter
             rb_calculate_avg_jitter(state, jitter);
           } else if (clock_return == GST_CLOCK_UNSCHEDULED) {
+            // drop buffer if clock is not running
             g_mutex_lock(&state->push_queue_mutex);
             if (state->push_queue[state->push_queue_read_idx] == outbuf) {
               state->push_queue[state->push_queue_read_idx] = NULL;

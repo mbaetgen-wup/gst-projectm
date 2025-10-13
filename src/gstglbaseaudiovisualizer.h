@@ -64,9 +64,23 @@ GType gst_gl_base_audio_visualizer_get_type(void);
   (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_GL_BASE_AUDIO_VISUALIZER,         \
                              GstGLBaseAudioVisualizerClass))
 
+/**
+ * Plugin mode of operation type.
+ */
 typedef enum {
+  /**
+   * Real-time / live rendering.
+   */
   GST_GL_BASE_AUDIO_VISUALIZER_REALTIME,
+
+  /**
+   * Faster-than-real-time rendering.
+   */
   GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE,
+
+  /**
+   * Auto-detect if pipeline is live.
+   */
   GST_GL_BASE_AUDIO_VISUALIZER_AUTO
 } GstGLBaseAudioVisualizerMode;
 

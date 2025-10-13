@@ -12,16 +12,9 @@
  * This unit registers all gst elements from this plugin library to make them
  * available to GStreamer.
  */
-
-GST_DEBUG_CATEGORY(gst_projectm_debug);
-#define GST_CAT_DEFAULT gst_projectm_debug
-
 static gboolean plugin_init(GstPlugin *plugin) {
 
   gst_projectm_base_init_once();
-
-  GST_DEBUG_CATEGORY_INIT(gst_projectm_debug, "projectm", 0,
-                          "projectM visualizer plugin");
 
   // register main plugin projectM element
   gboolean p1 = gst_element_register(plugin, "projectm", GST_RANK_NONE,
