@@ -629,13 +629,15 @@ static void rb_calculate_avg_jitter(RBRenderBuffer *state,
  * @param outbuf Buffer to apply correction to.
  */
 static void rb_jitter_correction(RBRenderBuffer *state, GstBuffer *outbuf) {
-  GstClockTime correction =
-      gst_util_uint64_scale_int((guint64)fabs(state->avg_jitter), 1, 1);
 
-  if (state->avg_jitter > 0) {
-    GST_BUFFER_PTS(outbuf) -= correction;
-  } else {
-    GST_BUFFER_PTS(outbuf) += correction;
+  if (GST_BUFFER_PTS(outbuf) != GST_CLOCK_TIME_NONE) {
+    GstClockTime correction = llabs((guint64)state->avg_jitter);
+
+    if (state->avg_jitter > 0) {
+      GST_BUFFER_PTS(outbuf) -= correction;
+    } else {
+      GST_BUFFER_PTS(outbuf) += correction;
+    }
   }
 }
 
@@ -678,27 +680,41 @@ static gpointer rb_push_thread_func(gpointer user_data) {
     GstBuffer *outbuf = state->push_queue[state->push_queue_read_idx];
 
     // determine when it's time to push
-    GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
-    if (clock) {
-      const GstClockTime base_time =
-          gst_element_get_base_time(GST_ELEMENT(state->plugin));
+    const GstClockTime pts = GST_BUFFER_PTS(outbuf);
+    if (pts != GST_CLOCK_TIME_NONE) {
+      GstClock *clock = gst_element_get_clock(GST_ELEMENT(state->plugin));
+      if (clock) {
+        const GstClockTime base_time =
+            gst_element_get_base_time(GST_ELEMENT(state->plugin));
 
-      const GstClockTime pts = GST_BUFFER_PTS(outbuf);
-      const GstClockTime abs_time = pts + base_time;
+        const GstClockTime abs_time = pts + base_time;
 
-      GstClockTimeDiff remaining_wait =
-          GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
+        GstClockTimeDiff remaining_wait =
+            GST_CLOCK_DIFF(gst_clock_get_time(clock), abs_time);
 
-      if (remaining_wait > MIN_PUSH_SCHEDULE_WAIT) {
-        GstClockTimeDiff jitter = 0;
-        GstClockID clock_id = gst_clock_new_single_shot_id(clock, abs_time);
-        gst_clock_id_wait(clock_id, &jitter);
-        gst_clock_id_unref(clock_id);
+        if (remaining_wait > MIN_PUSH_SCHEDULE_WAIT) {
+          g_mutex_unlock(&state->push_queue_mutex);
 
-        // record jitter
-        rb_calculate_avg_jitter(state, jitter);
+          GstClockTimeDiff jitter = 0;
+          GstClockID clock_id = gst_clock_new_single_shot_id(clock, abs_time);
+          GstClockReturn clock_return = gst_clock_id_wait(clock_id, &jitter);
+          gst_clock_id_unref(clock_id);
+
+          if (clock_return == GST_CLOCK_OK || clock_return == GST_CLOCK_EARLY) {
+            // record jitter
+            rb_calculate_avg_jitter(state, jitter);
+          } else if (clock_return == GST_CLOCK_UNSCHEDULED) {
+            g_mutex_lock(&state->push_queue_mutex);
+            if (state->push_queue[state->push_queue_read_idx] == outbuf) {
+              state->push_queue[state->push_queue_read_idx] = NULL;
+              rb_queue_gl_buffer_cleanup(state, outbuf);
+            }
+            gst_object_unref(clock);
+            continue;
+          }
+          g_mutex_lock(&state->push_queue_mutex);
+        }
       }
-
       gst_object_unref(clock);
     }
 
@@ -713,7 +729,10 @@ static gpointer rb_push_thread_func(gpointer user_data) {
     // push buffer downstream
     const GstFlowReturn ret = gst_pad_push(state->src_pad, outbuf);
 
-    if (ret != GST_FLOW_OK) {
+    if (ret == GST_FLOW_FLUSHING) {
+      GST_INFO_OBJECT(state->plugin,
+                      "Pad is flushing and does not accept buffers anymore");
+    } else if (ret != GST_FLOW_OK) {
       GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
     }
 
@@ -790,7 +809,10 @@ static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
       // push buffer downstream directly for offline rendering or if
       // queuing is disabled
       ret = gst_pad_push(state->src_pad, outbuf);
-      if (ret != GST_FLOW_OK) {
+      if (ret == GST_FLOW_FLUSHING) {
+        GST_INFO_OBJECT(state->plugin,
+                        "Pad is flushing and does not accept buffers anymore");
+      } else if (ret != GST_FLOW_OK) {
         GST_WARNING_OBJECT(state->plugin, "Failed to push buffer to pad");
       }
 #if PUSH_QUEUE_SIZE > 0
