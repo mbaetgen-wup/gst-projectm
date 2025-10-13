@@ -15,19 +15,23 @@ find_package(GStreamer REQUIRED COMPONENTS gstreamer-audio gstreamer-gl gstreame
 find_package(GLIB2 REQUIRED)
 
 add_library(gstprojectm SHARED
-    src/gstprojectmcaps.h
-    src/gstprojectmcaps.c
+    src/bufferdisposal.h
+    src/bufferdisposal.c
     src/debug.h
     src/debug.c
-    src/gstprojectmconfig.h
-    src/gstprojectm.h
-    src/gstprojectm.c
     src/gstglbaseaudiovisualizer.h
     src/gstglbaseaudiovisualizer.c
     src/gstpmaudiovisualizer.h
     src/gstpmaudiovisualizer.c
+    src/gstprojectm.h
+    src/gstprojectm.c
     src/gstprojectmbase.h
     src/gstprojectmbase.c
+    src/gstprojectmcaps.h
+    src/gstprojectmcaps.c
+    src/gstprojectmconfig.h
+    src/pushbuffer.h
+    src/pushbuffer.c
     src/register.c
     src/renderbuffer.h
     src/renderbuffer.c

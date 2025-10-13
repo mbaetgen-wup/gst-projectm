@@ -483,17 +483,17 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
   }
 
   // render loop QoS is disabled for offline rendering
-  rb_init_render_buffer(&glav->priv->render_buffer, GST_OBJECT(glav),
-                        gst_gl_base_audio_visualizer_fill_gl,
-                        adjust_fps_callback, max_frame_duration,
-                        caps_frame_duration, glav->priv->is_realtime,
-                        glav->priv->is_realtime);
+  rb_init_render_buffer(
+      &glav->priv->render_buffer, GST_OBJECT(glav), glav->context, pmav->srcpad,
+      gst_gl_base_audio_visualizer_fill_gl, adjust_fps_callback,
+      max_frame_duration, caps_frame_duration, glav->priv->is_realtime,
+      glav->priv->is_realtime);
 
   // cascade gl start to implementor
   glav->priv->gl_started = glav_class->gl_start(glav);
 
   // get gl rendering going
-  rb_start(&glav->priv->render_buffer, glav->context, pmav->srcpad);
+  rb_start(&glav->priv->render_buffer);
 }
 
 static void

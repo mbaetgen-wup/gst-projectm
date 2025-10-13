@@ -438,6 +438,16 @@ static gboolean gst_pm_audio_visualizer_do_setup(GstPMAudioVisualizer *scope) {
   return TRUE;
 }
 
+static void check_ready_unlocked(GstPMAudioVisualizer *scope) {
+  if (scope->priv->src_ready && scope->priv->sink_ready) {
+    g_mutex_unlock(&scope->priv->config_lock);
+    gst_pm_audio_visualizer_do_setup(scope);
+    g_mutex_lock(&scope->priv->config_lock);
+  } else {
+    scope->priv->ready = FALSE;
+  }
+}
+
 static gboolean
 gst_pm_audio_visualizer_sink_setcaps(GstPMAudioVisualizer *scope,
                                      GstCaps *caps) {
@@ -459,11 +469,8 @@ gst_pm_audio_visualizer_sink_setcaps(GstPMAudioVisualizer *scope,
 
   g_mutex_lock(&scope->priv->config_lock);
   scope->priv->sink_ready = TRUE;
+  check_ready_unlocked(scope);
   g_mutex_unlock(&scope->priv->config_lock);
-
-  if (scope->priv->src_ready) {
-    gst_pm_audio_visualizer_do_setup(scope);
-  }
 
   return TRUE;
 
@@ -504,12 +511,8 @@ static gboolean gst_pm_audio_visualizer_src_setcaps(GstPMAudioVisualizer *scope,
 
   g_mutex_lock(&scope->priv->config_lock);
   scope->priv->src_ready = TRUE;
+  check_ready_unlocked(scope);
   g_mutex_unlock(&scope->priv->config_lock);
-  if (scope->priv->sink_ready) {
-    if (!gst_pm_audio_visualizer_do_setup(scope)) {
-      goto setup_failed;
-    }
-  }
 
   return res;
 
@@ -1215,7 +1218,7 @@ void gst_pm_audio_visualizer_adjust_fps(GstPMAudioVisualizer *scope,
     gchar *message =
         g_strdup_printf("Adjusting framerate, max fps: %f, using "
                         "frame-duration: %" GST_TIME_FORMAT ", spf: %u",
-                        (gdouble)frame_duration / GST_SECOND,
+                        (gdouble)GST_SECOND / (gdouble)frame_duration,
                         GST_TIME_ARGS(set_duration), set_req_spf);
 
     g_idle_add(log_fps_change, message);

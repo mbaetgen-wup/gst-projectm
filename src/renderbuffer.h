@@ -2,18 +2,9 @@
  * Utility to allow offloading of rendering tasks from the plugin chain
  * function.
  *
- * Functionality provided:
- * - A ring buffer based rendering task queue with a limited number of rendering
- *   slots. It is being consumed by a dedicated thread (render thread) to
- *   dispatch rendering to the GL thread.
- *
- * - A ring buffer based queue to schedule GL buffers to be pushed
- *   downstream at presentation time. It is being consumed by a dedicated thread
- *   (push thread).
- *
- * - An async queue to dispose of dropped GL buffers. It is being consumed by
- *   a dedicated thread (cleanup thread) to dispatch GL buffer cleanup to the GL
- *   thread.
+ * A ring buffer based rendering task queue with a limited number of rendering
+ * slots. It is being consumed by a dedicated thread (render thread) to
+ * dispatch rendering to the GL thread.
  *
  * ---
  *
@@ -55,11 +46,7 @@
  *   EMA will also recover fps when render performance increases again.
  *
  * - GL buffers that completed rendering are scheduled to be pushed to the
- *   source pad at presentation time (PTS). The queue implemented as a ring
- *   buffer that blocks on insert in case it is at capacity until the buffer
- *   can be scheduled. The render loop is throttled by waiting on a free slot.
- *   A separate worker thread consumes the ring buffer and waits for reaching
- *   the PTS of the current GL buffer before pushing it downstream.
+ *   source pad at presentation time (PTS) using a PBPushBuffer.
  */
 
 #ifndef __RENDERBUFFER_H__
@@ -67,6 +54,9 @@
 
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
+
+#include "bufferdisposal.h"
+#include "pushbuffer.h"
 
 G_BEGIN_DECLS
 
@@ -87,21 +77,8 @@ G_BEGIN_DECLS
 #define NUM_RENDER_SLOTS 2
 #endif
 
-/**
- * Max number of gl frame buffers waiting in a scheduled state to be pushed.
- * The push queue decouples the render loop from buffer push timing, allowing
- * the render loop to render frames ahead up to the queue capacity.
- * Capacity should be low (1-2) to allow back-pressure from fps increases to
- * propagate quickly. The queuing call will block when capacity is reached and
- * throttle the render loop, frames are never dropped.
- *
- * 0  : Disable push queuing, block render loop directly until PTS of current
- *      frame is reached. Disables the push queue API entirely.
- * >0 : Allow n buffers waiting in the queue for pushing while render thread
- *      continues.
- */
-#ifndef PUSH_QUEUE_SIZE
-#define PUSH_QUEUE_SIZE 1
+#ifndef PUSH_BUFFER_ENABLED
+#define PUSH_BUFFER_ENABLED 1
 #endif
 
 /**
@@ -233,49 +210,14 @@ typedef struct {
    */
   GstPad *src_pad;
 
+  BDBufferDisposal buffer_disposal;
+
+  PBPushBuffer push_buffer;
+
   /**
    * Thread running the render loop.
    */
   GThread *render_thread;
-
-  /**
-   * Thread running the gl buffer clean-up loop,
-   * used to release dropped buffer from the gl thread.
-   */
-  GThread *cleanup_thread;
-
-  /**
-   * Thread for pushing gl buffers downstream.
-   * Used for real-time, pushing needs to be scheduled to be synchronized with
-   * the pipeline clock.
-   */
-  GThread *push_thread;
-
-  /**
-   * Ring buffer to schedule gl buffers for pushing.
-   */
-  GstBuffer *push_queue[PUSH_QUEUE_SIZE];
-
-  /**
-   * Mutex for push ring buffer.
-   */
-  GMutex push_queue_mutex;
-
-  /**
-   * Condition signaled when a buffer has been queued.
-   */
-  GCond push_queue_cond;
-
-  /**
-   * Condition signaled when a buffer has been pushed
-   * and a slot if free.
-   */
-  GCond push_queue_free_cond;
-
-  /**
-   * Queue to dispose of dropped gl buffers.
-   */
-  GAsyncQueue *buffer_cleanup_queue;
 
   /**
    * Callback function pointer to let the plugin know to change fps.
@@ -358,32 +300,6 @@ typedef struct {
    */
   guint64 ema_smoothed_render_time;
 
-  // concurrent access, protected by push_queue_mutex
-  // --------------------------------------------------------------
-
-  /**
-   * Push ring buffer write position.
-   */
-  gint push_queue_write_idx;
-
-  /**
-   * Push ring buffer read position.
-   */
-  gint push_queue_read_idx;
-
-  // used only by either render or push thread
-  // --------------------------------------------------------------
-
-  /**
-   * EMA based clock jitter average.
-   */
-  gdouble avg_jitter;
-
-  /**
-   * Clock jitter initialized.
-   */
-  gboolean avg_jitter_init;
-
 } RBRenderBuffer;
 
 /**
@@ -428,8 +344,10 @@ typedef struct {
  * @param max_frame_duration FPS adjustment lower limit.
  * @param caps_frame_duration FPS requested by pipeline caps.
  * @param is_qos_enabled Controls if render-time QoS is enabled (EMA).
+ * @param is_realtime If TRUE async rendering is used.
  */
 void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
+                           GstGLContext *gl_context, GstPad *src_pad,
                            GstGLContextThreadFunc gl_fill_func,
                            RBAdjustFpsFunc adjust_fps_func,
                            GstClockTime max_frame_duration,
@@ -473,6 +391,7 @@ void rb_queue_render_task_log(RBQueueArgs *args);
  * queuing may not be used with the same render buffer at the same time.
  *
  * @param state Render buffer to use.
+ * @param in_audio Audio buffer to pass to projectM. No ownership.
  * @param pts Frame PTS.
  * @param frame_duration Frame duration.
  * @return The downstream push result.
@@ -507,10 +426,8 @@ void rb_clear(RBRenderBuffer *state);
  * Needs to be called from GL thread.
  *
  * @param state Render buffer to use.
- * @param gl_context GL context to use for rendering.
- * @param src_pad Source pad to push video buffers to.
  */
-void rb_start(RBRenderBuffer *state, GstGLContext *gl_context, GstPad *src_pad);
+void rb_start(RBRenderBuffer *state);
 
 /**
  * Stop render loop. Active threads will be joined before returning.
