@@ -2,9 +2,9 @@
  * Utility to allow offloading of rendering tasks from the plugin chain
  * function.
  *
- * A ring buffer based rendering task queue with a limited number of rendering
- * slots. It is being consumed by a dedicated thread (render thread) to
- * dispatch rendering to the GL thread.
+ * Uses a ring buffer based rendering task queue with a fixed number of
+ * rendering slots. The queue is consumed by a dedicated thread
+ * (rb-render-thread) to dispatch rendering to the GL thread.
  *
  * ---
  *
@@ -77,10 +77,6 @@ G_BEGIN_DECLS
 #define NUM_RENDER_SLOTS 2
 #endif
 
-#ifndef PUSH_BUFFER_ENABLED
-#define PUSH_BUFFER_ENABLED 1
-#endif
-
 /**
  * Callback function pointer type for triggering a dynamic fps change.
  */
@@ -104,7 +100,7 @@ typedef enum {
    * Slot is currently being rendered.
    */
   RB_BUSY
-} RQSlotState;
+} RBSlotState;
 
 /**
  * Result status of queuing a buffer for rendering.
@@ -133,7 +129,7 @@ typedef enum {
  */
 typedef struct {
 
-  // not re-assigned
+  // not re-assigned, needed as context to dispatch rendering
   // --------------------------------------------------------------
 
   /**
@@ -183,7 +179,7 @@ typedef struct {
   /**
    * Usage state of this slot.
    */
-  RQSlotState state;
+  RBSlotState state;
 
 } RBSlot;
 
@@ -210,8 +206,14 @@ typedef struct {
    */
   GstPad *src_pad;
 
+  /**
+   * Utility to properly release GL buffers.
+   */
   BDBufferDisposal buffer_disposal;
 
+  /**
+   * Utility for scheduling downstream push of rendered buffers.
+   */
   PBPushBuffer push_buffer;
 
   /**

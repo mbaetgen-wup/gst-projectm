@@ -276,15 +276,16 @@ pipeline caps FPS.
 Video frame PTS offset is derived from the **first audio buffer PTS** or **segment event** plus accumulated samples to align with audio timing.
 
 
-| Timing Source                    | Origin             | Applies to clock | Purpose                                                                                           |
-|----------------------------------|--------------------|------------------|---------------------------------------------------------------------------------------------------|
-| Audio Timestamps                 | Audio Input        | Always           | Determine video timing and sync.                                                                  |
-| Sample Rate / Pipeline FPS       | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                                 |
-| Segment Info                     | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                                  |
-| QoS Feedback                     | QoS Event          | Live             | Skips outdated frames to reduce latency.                                                          |
-| Render Frame Drop                | Render Loop        | Live             | Drop frames that cannot be rendered in time.                                                      |
-| Exponential Moving Average (EMA) | Render Loop        | Live             | Adjust plugin target FPS in case frame render time exceeds the real-time budget most of the time. |
-| Latency Event                    | Render Loop        | Live             | Inform upstream of latency changes in case of adaptive FPS changes (EMA).                         |
+| Timing Source              | Origin             | Applies to clock | Purpose                                                                                                                                                                                                                                                           |
+|----------------------------|--------------------|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Audio Timestamps           | Audio Input        | Always           | Determine video timing and sync.                                                                                                                                                                                                                                  |
+| Sample Rate / Pipeline FPS | Audio Input / Caps | Always           | Defines how many audio samples are used per frame and target FPS.                                                                                                                                                                                                 |
+| Segment Info               | Segment Event      | Always           | Tracks running time and playback position. Used for PTS offsets.                                                                                                                                                                                                  |
+| QoS Feedback               | QoS Event          | Live             | Skips outdated frames to correct sync with downstream sink/pipeline clock.                                                                                                                                                                                        |
+| Render Frame Drop          | Render Loop        | Live             | Drop frames that cannot be rendered in time to keep sync with pipeline clock.                                                                                                                                                                                     |
+| GL Frame Render Duration   | Render Loop        | Live             | Exponential Moving Average of the frame render duration. Adjusts plugin target FPS in case exceeds the real-time budget most of the time.                                                                                                                         |
+| Latency Event              | Render Loop        | Live             | Inform upstream of latency changes in case of adaptive FPS changes (via EMA).                                                                                                                                                                                     |
+| Buffer push clock jitter   | Render Loop        | Live             | Exponential Moving Average of the source pad push jitter caused by the scheduler. Clocks in gstreamer are not guaranteed to be precise with timed waits, as this cannot be guaranteed by the operating system. Adds jitter EMA as a correction to the buffer PTS. |
 
 
 ---

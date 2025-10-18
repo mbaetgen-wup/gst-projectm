@@ -1,9 +1,11 @@
 /*
  * A ring buffer based queue to schedule GL buffers to be pushed
- * downstream at presentation time (PTS). The queue is consumed by a dedicated
- * thread (pb-push-thread) to wait for the next scheduled push. The queuing call
- * will block when capacity is reached and throttle the render loop by letting
- * it wait for a free slot. Frames are never dropped.
+ * downstream at presentation time (PTS). The push queue decouples the render
+ * loop from buffer push timing, allowing the render loop to render frames ahead
+ * up to the queue capacity. The queue is consumed by a dedicated thread
+ * (pb-push-thread) to wait for the next scheduled push. The queuing call will
+ * block when capacity is reached until a free slot is available, throttling the
+ * render loop. Frames are never dropped.
  */
 
 #ifndef __PUSHBUFFER_H__
@@ -15,13 +17,12 @@
 
 /**
  * Max number of gl frame buffers waiting in a scheduled state to be pushed.
- * The push queue decouples the render loop from buffer push timing, allowing
- * the render loop to render frames ahead up to the queue capacity.
  * Capacity should be low (1-2) to allow back-pressure from fps increases to
  * propagate quickly.
  *
  * 0  : Disable push queuing, block render loop directly until PTS of current
- *      frame is reached. Disables the push queue API entirely.
+ *      frame is reached.
+ *
  * >0 : Allow n buffers waiting in the queue for pushing while render thread
  *      continues.
  */
@@ -30,11 +31,11 @@
 #endif
 
 /**
- * All render buffer data.
+ * Push buffer state.
  */
 typedef struct {
 
-  // not re-assigned during render thread lifetime
+  // not re-assigned during push buffer lifetime
   // --------------------------------------------------------------
 
   /**
@@ -76,9 +77,14 @@ typedef struct {
 
   /**
    * Condition signaled when a buffer has been pushed
-   * and a slot if free.
+   * and a slot is free.
    */
   GCond push_queue_free_cond;
+
+  /**
+   * Clock to use for scheduling.
+   */
+  GstClock *clock;
 
   // concurrent access, g_atomic
   // --------------------------------------------------------------
@@ -101,13 +107,13 @@ typedef struct {
    */
   gint push_queue_read_idx;
 
-  // used only by either render or push thread
+  // used only by either render (offline) or push thread (real-time)
   // --------------------------------------------------------------
 
   /**
    * EMA based clock jitter average.
    */
-  gdouble avg_jitter;
+  GstClockTimeDiff avg_jitter;
 
   /**
    * Clock jitter initialized.
@@ -117,12 +123,12 @@ typedef struct {
 } PBPushBuffer;
 
 /**
- * Schedule a rendered gl buffer for pushing downstream.
+ * Schedule a rendered gl buffer for getting pushed downstream.
  * The buffer will not be pushed until it's PTS time is reached.
- * This call will block until the buffer can be schduled or
+ * This call will block until the buffer can be scheduled or
  * the render buffer is stopped.
  *
- * @param state The render buffer to use.
+ * @param state The push buffer to use.
  * @param buffer The gl buffer to push. Takes ownership of the buffer.
  *
  * @return TRUE if the buffer was scheduled successfully, FALSE in case the
@@ -140,18 +146,30 @@ void pb_clear_queue(PBPushBuffer *state);
 /**
  * Applies jitter correction to the given buffer.
  *
- * @param state Current render buffer.
+ * @param state Current push buffer.
  * @param outbuf Buffer to apply correction to.
  */
-static void pb_jitter_correction(PBPushBuffer *state, GstBuffer *outbuf);
+void pb_jitter_correction(PBPushBuffer *state, GstBuffer *outbuf);
 
 /**
  * Calculate current clock jitter average.
  *
- * @param state Current render buffer.
+ * @param state Current push buffer.
  * @param jitter Latest jitter value.
  */
 void pb_calculate_avg_jitter(PBPushBuffer *state, GstClockTimeDiff jitter);
+
+/**
+ * Wait until reaching the given PTS. The clock jitter is recorded if it's
+ * appropriate to do so.
+ *
+ * @param state Push buffer to use.
+ * @param pts Wait until this PTS is reached.
+ * @param locked Controls if unlocking is needed before entering wait.
+ *
+ * @return The clock wait result.
+ */
+GstClockReturn pb_wait_to_push(PBPushBuffer *state, GstClockTime pts);
 
 /**
  * Init this push buffer.

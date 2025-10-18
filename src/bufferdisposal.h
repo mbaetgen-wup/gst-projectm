@@ -1,6 +1,6 @@
 /*
- * An async queue to dispose of (dropped) GL buffers. It is being consumed by
- * a dedicated thread (bd-disposal-thread) to dispatch GL buffer cleanup to the
+ * An async queue to dispose of (dropped) GL buffers. The queue is consumed by
+ * a dedicated thread (bd-disposal-thread) to dispatch GL buffer unref to the
  * GL thread.
  */
 
@@ -42,19 +42,20 @@ typedef struct {
 } BDBufferDisposal;
 
 /**
- * Release given buffer from the GL thread.
+ * Dispose given buffer from the GL thread.
+ * Disposal will be queued if current thread is not the GL thread.
  *
  * @param state State to use.
  * @param buf Buffer to dispose.
  */
-void bd_queue_gl_buffer_disposal(BDBufferDisposal *state, GstBuffer *buf);
+void bd_dispose_gl_buffer(BDBufferDisposal *state, GstBuffer *buf);
 
 /**
  * Dispose of all buffers currently queued for disposal.
  *
  * @param state Renderbuffer owning cleanup queue to clear.
  */
-void bd_clear_disposal_queue(BDBufferDisposal *state);
+void bd_clear(BDBufferDisposal *state);
 
 /**
  * Init queue state.
