@@ -367,14 +367,12 @@ static void gst_pm_audio_visualizer_dispose(GObject *object) {
     g_object_unref(scope->priv->adapter);
     scope->priv->adapter = NULL;
   }
-  if (scope->priv->config_lock.p) {
-    g_mutex_clear(&scope->priv->config_lock);
-    scope->priv->config_lock.p = NULL;
+  if (scope->priv->inbuf) {
+    gst_buffer_unref(scope->priv->inbuf);
+    scope->priv->inbuf = NULL;
   }
-  if (scope->priv->ready_cond.p) {
-    g_cond_clear(&scope->priv->ready_cond);
-    scope->priv->ready_cond.p = NULL;
-  }
+  g_mutex_clear(&scope->priv->config_lock);
+  g_cond_clear(&scope->priv->ready_cond);
 
   G_OBJECT_CLASS(parent_class)->dispose(object);
 }

@@ -254,7 +254,7 @@ void pb_start_push_buffer(PBPushBuffer *state) {
   g_atomic_int_set(&state->running, TRUE);
 
   state->push_thread =
-      g_thread_new("rb-push-thread", rb_push_thread_func, state);
+      g_thread_new("pb-push-thread", rb_push_thread_func, state);
 }
 
 void pb_stop_push_buffer(PBPushBuffer *state) {

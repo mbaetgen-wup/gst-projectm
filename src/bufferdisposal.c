@@ -9,12 +9,6 @@ GST_DEBUG_CATEGORY_STATIC(buffercleanup_debug);
  */
 static gpointer BC_Q_SHUTDOWN_SIGNAL = &BC_Q_SHUTDOWN_SIGNAL;
 
-void bd_queue_gl_buffer_disposal(BDBufferDisposal *state, GstBuffer *buf) {
-  g_assert(state != NULL);
-  g_assert(buf != NULL);
-  g_async_queue_push(state->disposal_queue, buf);
-}
-
 /**
  * Callback for scheduling gl buffer release with gl thread.
  * Needs to be called from the GL thread.
@@ -24,7 +18,22 @@ void bd_queue_gl_buffer_disposal(BDBufferDisposal *state, GstBuffer *buf) {
  */
 void bd_gl_buffer_dispose_gl(GstGLContext *context, gpointer buf) {
   (void)context;
+
+  GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(buf);
+  if (sync_meta)
+    gst_gl_sync_meta_set_sync_point(sync_meta, context);
+
   gst_buffer_unref(GST_BUFFER(buf));
+}
+
+void bd_queue_gl_buffer_disposal(BDBufferDisposal *state, GstBuffer *buf) {
+  g_assert(state != NULL);
+  g_assert(buf != NULL);
+  if (gst_gl_context_get_current() == state->gl_context) {
+    bd_gl_buffer_dispose_gl(state->gl_context, buf);
+  } else {
+    g_async_queue_push(state->disposal_queue, buf);
+  }
 }
 
 /**
@@ -59,7 +68,7 @@ static gpointer bd_dispose_thread_func(gpointer user_data) {
  * @param user_data Queue state to use.
  * @return NULL
  */
-void bd_clear_queue_gl(GstGLContext* context, gpointer user_data) {
+void bd_clear_queue_gl(GstGLContext *context, gpointer user_data) {
   BDBufferDisposal *state = (BDBufferDisposal *)user_data;
   g_assert(state != NULL);
 
@@ -71,7 +80,11 @@ void bd_clear_queue_gl(GstGLContext* context, gpointer user_data) {
 }
 
 void bd_clear_disposal_queue(BDBufferDisposal *state) {
-  gst_gl_context_thread_add(state->gl_context, bd_clear_queue_gl, state);
+  if (gst_gl_context_get_current() == state->gl_context) {
+    bd_clear_queue_gl(state->gl_context, state);
+  } else {
+    gst_gl_context_thread_add(state->gl_context, bd_clear_queue_gl, state);
+  }
 }
 
 void bd_init_buffer_disposal(BDBufferDisposal *state,
@@ -98,7 +111,7 @@ void bd_start_buffer_disposal(BDBufferDisposal *state) {
   g_atomic_int_set(&state->running, TRUE);
 
   state->disposal_thread =
-      g_thread_new("rb-cleanup-thread", bd_dispose_thread_func, state);
+      g_thread_new("bd-disposal-thread", bd_dispose_thread_func, state);
 }
 
 void bd_stop_buffer_disposal(BDBufferDisposal *state) {

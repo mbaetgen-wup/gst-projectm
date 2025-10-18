@@ -75,12 +75,12 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
  * Allow 0.75 * fps frame duration as wait time for frame render queuing before
  * dropping previous frame.
  */
-#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N 3
+#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 3
 #endif
 
-#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D 4
+#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D 4
 #endif
 
 /*
@@ -622,8 +622,8 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
     // limit wait based on fps factor, make sure we never wait too long in order
     // to keep in sync
     args.max_wait = (GstClockTimeDiff)gst_util_uint64_scale_int(
-        frame_duration, MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_N,
-        MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATRIONS_D);
+        frame_duration, MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N,
+        MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D);
 
     g_rec_mutex_unlock(&glav->priv->context_lock);
 

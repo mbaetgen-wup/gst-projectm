@@ -1,7 +1,7 @@
 /*
- * An async queue to dispose of dropped GL buffers. It is being consumed by
- * a dedicated thread (disposal thread) to dispatch GL buffer cleanup to the GL
- * thread.
+ * An async queue to dispose of (dropped) GL buffers. It is being consumed by
+ * a dedicated thread (bd-disposal-thread) to dispatch GL buffer cleanup to the
+ * GL thread.
  */
 
 #ifndef __BUFFERDISPOSAL_H__

@@ -1,9 +1,9 @@
 /*
  * A ring buffer based queue to schedule GL buffers to be pushed
- * downstream at presentation time (PTS). It is being consumed by a dedicated
- * thread (push thread) used for processing. The queuing call will block when
- * capacity is reached and throttle the render loop by letting it wait for a
- * free slot. Frames are never dropped.
+ * downstream at presentation time (PTS). The queue is consumed by a dedicated
+ * thread (pb-push-thread) to wait for the next scheduled push. The queuing call
+ * will block when capacity is reached and throttle the render loop by letting
+ * it wait for a free slot. Frames are never dropped.
  */
 
 #ifndef __PUSHBUFFER_H__
