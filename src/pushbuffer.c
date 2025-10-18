@@ -10,7 +10,7 @@ GST_DEBUG_CATEGORY_STATIC(pushbuffer_debug);
  * EMA aloha for push schedule clock jitter average.
  */
 #ifndef JITTER_EMA_ALPHA
-#define JITTER_EMA_ALPHA 0.75
+#define JITTER_EMA_ALPHA 0.85
 #endif
 
 /**
