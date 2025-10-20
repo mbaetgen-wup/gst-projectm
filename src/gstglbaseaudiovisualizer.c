@@ -34,11 +34,12 @@
 #include "config.h"
 #endif
 
-#include <gst/gl/gl.h>
-
 #include "gstglbaseaudiovisualizer.h"
+
 #include "gstpmaudiovisualizer.h"
 #include "renderbuffer.h"
+
+#include <gst/gl/gl.h>
 
 /**
  * SECTION:GstGLBaseAudioVisualizer
@@ -72,8 +73,8 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
 #define DEFAULT_TIMESTAMP_OFFSET 0
 
 /**
- * Allow 0.625 * fps frame duration as wait time for frame render queuing before
- * dropping previous frame.
+ * Wait for up to 0.625 * fps frame duration for the previous frame to start
+ * rendering, otherwise the previous frame is dropped.
  */
 #ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N
 #define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 5
@@ -147,12 +148,12 @@ gst_gl_base_audio_visualizer_parent_render(GstPMAudioVisualizer *bscope,
                                            guint64 frame_duration);
 
 /**
- * Internal utility for resetting state on start \
+ * Internal utility for resetting state on start.
  */
 static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav);
 
 /**
- * Internal utility for cleaning up gl context on stop
+ * Internal utility for cleaning up gl context on stop.
  */
 static void gst_gl_base_audio_visualizer_stop(GstGLBaseAudioVisualizer *glav);
 

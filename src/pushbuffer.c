@@ -1,9 +1,12 @@
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 
 #include "pushbuffer.h"
 
-#include <tgmath.h>
-
 #include "bufferdisposal.h"
+
+#include <tgmath.h>
 
 GST_DEBUG_CATEGORY_STATIC(pushbuffer_debug);
 #define GST_CAT_DEFAULT pushbuffer_debug

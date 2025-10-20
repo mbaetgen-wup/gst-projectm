@@ -2,10 +2,10 @@
 #include "config.h"
 #endif
 
+#include "debug.h"
+
 #include <gst/gl/gl.h>
 #include <gst/gl/gstglfuncs.h>
-
-#include "debug.h"
 
 void gl_error_handler(GstGLContext *context) {
   GLuint error = context->gl_vtable->GetError();

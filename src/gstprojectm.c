@@ -6,13 +6,13 @@
 #include <GL/glew.h>
 #endif
 
-#include <gst/gst.h>
-
 #include "gstprojectm.h"
 
 #include "debug.h"
 #include "gstglbaseaudiovisualizer.h"
 #include "gstprojectmcaps.h"
+
+#include <gst/gst.h>
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_debug);
 #define GST_CAT_DEFAULT gst_projectm_debug

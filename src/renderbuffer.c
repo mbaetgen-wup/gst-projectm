@@ -3,9 +3,9 @@
 #include "config.h"
 #endif
 
-#include <math.h>
-
 #include "renderbuffer.h"
+
+#include <math.h>
 
 GST_DEBUG_CATEGORY_STATIC(renderbuffer_debug);
 #define GST_CAT_DEFAULT renderbuffer_debug

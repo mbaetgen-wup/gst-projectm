@@ -3,11 +3,12 @@
 #include <config.h>
 #endif
 
-#include <gst/audio/audio-format.h>
-#include <gst/video/video-format.h>
+#include "gstprojectmcaps.h"
 
 #include "gstprojectm.h"
-#include "gstprojectmcaps.h"
+
+#include <gst/audio/audio-format.h>
+#include <gst/video/video-format.h>
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_caps_debug);
 #define GST_CAT_DEFAULT gst_projectm_caps_debug

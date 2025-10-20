@@ -3,12 +3,13 @@
 #include "config.h"
 #endif
 
-#include <gst/gl/gstglframebuffer.h>
+#include "gstprojectmbase.h"
 
 #include "debug.h"
 #include "gstglbaseaudiovisualizer.h"
-#include "gstprojectmbase.h"
 #include "gstprojectmconfig.h"
+
+#include <gst/gl/gstglframebuffer.h>
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_base_debug);
 #define GST_CAT_DEFAULT gst_projectm_base_debug
