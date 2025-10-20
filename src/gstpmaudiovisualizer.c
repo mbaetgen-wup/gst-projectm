@@ -360,6 +360,12 @@ static void gst_pm_audio_visualizer_get_property(GObject *object, guint prop_id,
 static void gst_pm_audio_visualizer_dispose(GObject *object) {
   GstPMAudioVisualizer *scope = GST_PM_AUDIO_VISUALIZER(object);
 
+  // make sure nobody is still waiting to get started
+  g_mutex_lock(&scope->priv->config_lock);
+  scope->priv->ready = TRUE;
+  g_cond_broadcast(&scope->priv->ready_cond);
+  g_mutex_unlock(&scope->priv->config_lock);
+
   if (scope->priv->adapter) {
     g_object_unref(scope->priv->adapter);
     scope->priv->adapter = NULL;
@@ -368,6 +374,25 @@ static void gst_pm_audio_visualizer_dispose(GObject *object) {
     gst_buffer_unref(scope->priv->inbuf);
     scope->priv->inbuf = NULL;
   }
+
+  GST_OBJECT_LOCK(scope);
+  if (scope->priv->pool) {
+    if (scope->priv->pool_active)
+      gst_buffer_pool_set_active(scope->priv->pool, FALSE);
+    gst_object_unref(scope->priv->pool);
+    scope->priv->pool = NULL;
+    scope->priv->pool_active = FALSE;
+  }
+  if (scope->priv->allocator) {
+    gst_object_unref(scope->priv->allocator);
+    scope->priv->allocator = NULL;
+  }
+  if (scope->priv->query) {
+    gst_query_unref(scope->priv->query);
+    scope->priv->query = NULL;
+  }
+  GST_OBJECT_UNLOCK(scope);
+
   g_mutex_clear(&scope->priv->config_lock);
   g_cond_clear(&scope->priv->ready_cond);
 
@@ -746,14 +771,21 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
     scope->priv->pts_offset_initialized = TRUE;
     scope->priv->pts_offset = GST_BUFFER_PTS(buffer);
 
-    GstClock *clock = gst_element_get_clock(GST_ELEMENT(scope));
-    GstClockTime running_time = gst_clock_get_time(clock) -
-                                gst_element_get_base_time(GST_ELEMENT(scope));
+    if (gst_debug_category_get_threshold(pm_audio_visualizer_debug) >=
+        GST_LEVEL_INFO) {
+      GstClock *clock = gst_element_get_clock(GST_ELEMENT(scope));
+      GstClockTime running_time = 0;
+      if (clock != NULL) {
+        running_time = gst_clock_get_time(clock) -
+                       gst_element_get_base_time(GST_ELEMENT(scope));
+        gst_object_unref(clock);
+      }
 
-    GST_DEBUG_OBJECT(
-        scope,
-        "Buffer ts: %" GST_TIME_FORMAT ", running_time: %" GST_TIME_FORMAT,
-        GST_TIME_ARGS(scope->priv->pts_offset), GST_TIME_ARGS(running_time));
+      GST_DEBUG_OBJECT(
+          scope,
+          "Buffer ts: %" GST_TIME_FORMAT ", running_time: %" GST_TIME_FORMAT,
+          GST_TIME_ARGS(scope->priv->pts_offset), GST_TIME_ARGS(running_time));
+    }
   }
   g_mutex_unlock(&scope->priv->config_lock);
 
