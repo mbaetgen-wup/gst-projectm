@@ -201,7 +201,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
                             "projectM visualizer plugin render buffer");
   }
 
-  // context config without ownership
+  // context without ownership
   state->plugin = plugin;
   state->adjust_fps_func = adjust_fps_func;
   state->gl_context = gl_context;
@@ -216,7 +216,7 @@ void rb_init_render_buffer(RBRenderBuffer *state, GstObject *plugin,
   // changed all the time
   g_atomic_int_set(&state->running, FALSE);
 
-  // init render queue
+  // init render queue / changed all the time
   state->render_thread = NULL;
   state->render_write_idx = NUM_RENDER_SLOTS - 1;
   state->render_read_idx = NUM_RENDER_SLOTS - 1;
@@ -701,14 +701,14 @@ static gpointer _rb_render_thread_func(gpointer user_data) {
     g_mutex_unlock(&state->slot_lock);
 
     // perform gl rendering
-    const GstClockTime render_time = rb_render_slot(state, slot);
+    const GstClockTime render_duration = rb_render_slot(state, slot);
 
-    // copy params to locals vars to release the slot
+    // copy params to locals vars before releasing the slot
     GstBuffer *audio_buffer = slot->in_audio;
     const GstClockTime frame_duration = slot->frame_duration;
     const GstClockTime pts = slot->pts;
 
-    // copy results to locals vars to release the slot
+    // copy results to locals vars before releasing the slot
     GstBuffer *outbuf = slot->out_buf;
     const gboolean gl_result = slot->gl_result;
 
@@ -723,7 +723,7 @@ static gpointer _rb_render_thread_func(gpointer user_data) {
 
       // process rendering fps QoS in case frame was pushed
       if (state->qos_enabled) {
-        rb_handle_adaptive_fps_ema(state, render_time, frame_duration);
+        rb_handle_adaptive_fps_ema(state, render_duration, frame_duration);
       }
     }
     outbuf = NULL;

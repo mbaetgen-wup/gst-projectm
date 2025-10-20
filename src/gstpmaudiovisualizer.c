@@ -28,9 +28,6 @@
  * audio-rate to video-rate and handles renegotiation (downstream video size
  * changes).
  *
- * It also provides several background shading effects. These effects are
- * applied to a previous picture before the `render()` implementation can draw a
- * new frame.
  */
 
 /*
@@ -52,7 +49,7 @@
  * - Uses a sample count based approach for pts/dts timestamps instead
  * GstAdapter derived timestamps.
  *
- * - Consistent locking and fixes for some race conditions.
+ * - Consistent locking, memory (de)allocation
  *
  * - Allow dynamic fps adjustments while staying sample accurate.
  *
@@ -834,7 +831,7 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
         GST_WARNING_OBJECT(scope,
                            "Segment format not TIME, skipping QoS checks");
       } else if (GST_CLOCK_TIME_IS_VALID(earliest_time) &&
-                 qostime <= earliest_time) {
+                 qostime < earliest_time) {
         GstClockTime stream_time, jitter;
         GstMessage *qos_msg;
 
@@ -847,9 +844,13 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
         stream_time = gst_segment_to_stream_time(&scope->priv->segment,
                                                  GST_FORMAT_TIME, ts);
         jitter = GST_CLOCK_DIFF(qostime, earliest_time);
-        qos_msg =
-            gst_message_new_qos(GST_OBJECT(scope), FALSE, qostime, stream_time,
-                                ts, GST_BUFFER_DURATION(buffer));
+
+        GstClockTime duration = GST_BUFFER_DURATION_IS_VALID(buffer)
+                                    ? GST_BUFFER_DURATION(buffer)
+                                    : frame_duration;
+
+        qos_msg = gst_message_new_qos(GST_OBJECT(scope), FALSE, qostime,
+                                      stream_time, ts, duration);
         gst_message_set_qos_values(qos_msg, jitter, proportion, 1000000);
         gst_message_set_qos_stats(qos_msg, GST_FORMAT_BUFFERS,
                                   scope->priv->processed, scope->priv->dropped);

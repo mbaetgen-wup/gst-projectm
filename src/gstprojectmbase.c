@@ -164,7 +164,7 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
                   "hard-cut-sensitivity=%f, "
                   "soft-cut-duration=%f, "
                   "preset-duration=%f, "
-                  "mesh-size=(%lu, %lu)"
+                  "mesh-size=(%lu, %lu), "
                   "aspect-correction=%d, "
                   "easter-egg=%f, "
                   "preset-locked=%d, "
@@ -282,17 +282,13 @@ void gst_projectm_base_set_property(GObject *object,
     break;
   case PROP_MESH_SIZE: {
     const gchar *meshSizeStr = g_value_get_string(value);
-    gint width, height;
 
-    gchar **parts = g_strsplit(meshSizeStr, ",", 2);
-
-    if (parts && g_strv_length(parts) == 2) {
-      width = atoi(parts[0]);
-      height = atoi(parts[1]);
-
-      settings->mesh_width = width;
-      settings->mesh_height = height;
-
+    if (meshSizeStr) {
+      gchar **parts = g_strsplit(meshSizeStr, ",", 2);
+      if (parts[0] && parts[1]) {
+        settings->mesh_width = atoi(parts[0]);
+        settings->mesh_height = atoi(parts[1]);
+      }
       g_strfreev(parts);
     }
   } break;
@@ -685,15 +681,18 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
       g_param_spec_boolean(
           "enable-playlist", "Enable Playlist",
           "Enables or disables the playlist feature. When enabled, the "
-          "visualizer can switch between presets based on a provided playlist.",
+          "visualizer can switch between presets based on a provided "
+          "playlist.",
           DEFAULT_ENABLE_PLAYLIST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property(
       gobject_class, PROP_SHUFFLE_PRESETS,
       g_param_spec_boolean(
           "shuffle-presets", "Shuffle Presets",
-          "Enables or disables preset shuffling. When enabled, the visualizer "
-          "randomly selects presets from the playlist if presets are provided "
+          "Enables or disables preset shuffling. When enabled, the "
+          "visualizer "
+          "randomly selects presets from the playlist if presets are "
+          "provided "
           "and not locked. Playlist must be enabled for this to take effect.",
           DEFAULT_SHUFFLE_PRESETS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
@@ -711,10 +710,12 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
       gobject_class, PROP_IS_LIVE,
       g_param_spec_string(
           "is-live", "is live",
-          "Specifies if the plugin renders in real-time or as fast as possible "
+          "Specifies if the plugin renders in real-time or as fast as "
+          "possible "
           "(offline). This setting is auto-detected for live pipelines, "
           "but can also be specified if auto-detection is "
-          "not appropriate. Possible values are \"auto\", \"true\", \"false\". "
+          "not appropriate. Possible values are \"auto\", \"true\", "
+          "\"false\". "
           "Default is \"auto\".",
           DEFAULT_IS_LIVE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }

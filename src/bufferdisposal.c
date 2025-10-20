@@ -42,7 +42,7 @@ void bd_dispose_gl_buffer(BDBufferDisposal *state, GstBuffer *buf) {
 }
 
 /**
- * Used to dispose of dropped gl buffers that are not making it to the src pad.
+ * Disposal loop for dropped gl buffers that are not making it to the src pad.
  * Consume buffers to clean-up and dispatch release through gl thread.
  *
  * @param user_data Queue state to use.
@@ -71,11 +71,10 @@ static gpointer _bd_dispose_thread_func(gpointer user_data) {
 }
 
 /**
- * Dispose of all buffered currently queued.
+ * Dispose of all buffers currently queued.
  * Needs to be called from the GL thread.
  *
  * @param user_data Queue state to use.
- * @return NULL
  */
 void bd_clear_queue_gl(GstGLContext *context, gpointer user_data) {
   BDBufferDisposal *state = (BDBufferDisposal *)user_data;
@@ -109,7 +108,6 @@ void bd_init_buffer_disposal(BDBufferDisposal *state,
                             "projectM visualizer plugin buffer cleanup");
   }
 
-  // init clean up queue
   state->disposal_thread = NULL;
   state->gl_context = gl_context;
   g_atomic_int_set(&state->running, FALSE);
@@ -119,6 +117,7 @@ void bd_init_buffer_disposal(BDBufferDisposal *state,
 void bd_dispose_buffer_disposal(BDBufferDisposal *state) {
   g_assert(state != NULL);
   g_assert(state->disposal_thread == NULL);
+
   g_async_queue_unref(state->disposal_queue);
   state->disposal_queue = NULL;
   state->gl_context = NULL;

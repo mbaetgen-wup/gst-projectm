@@ -72,15 +72,15 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
 #define DEFAULT_TIMESTAMP_OFFSET 0
 
 /**
- * Allow 0.75 * fps frame duration as wait time for frame render queuing before
+ * Allow 0.625 * fps frame duration as wait time for frame render queuing before
  * dropping previous frame.
  */
 #ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 2
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 5
 #endif
 
 #ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D 3
+#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D 8
 #endif
 
 /*
