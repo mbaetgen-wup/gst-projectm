@@ -94,6 +94,9 @@ struct _GstPMAudioVisualizer {
    * Current pipeline latency.
    */
   GstClockTime latency;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 /**
@@ -143,6 +146,9 @@ struct _GstPMAudioVisualizerClass {
    * Virtual function allow implementor to receive segment change events.
    */
   void (*segment_change)(GstPMAudioVisualizer *scope, GstSegment *segment);
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 GType gst_pm_audio_visualizer_get_type(void);

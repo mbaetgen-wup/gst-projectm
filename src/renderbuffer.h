@@ -181,6 +181,8 @@ typedef struct {
    */
   RBSlotState state;
 
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 } RBSlot;
 
 /**
@@ -302,6 +304,8 @@ typedef struct {
    */
   guint64 ema_smoothed_render_time;
 
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 } RBRenderBuffer;
 
 /**
@@ -334,6 +338,8 @@ typedef struct {
    */
   GstBuffer *in_audio;
 
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 } RBQueueArgs;
 
 /**

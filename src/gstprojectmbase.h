@@ -37,6 +37,9 @@ struct _GstBaseProjectMSettings {
   gboolean shuffle_presets;
   gint min_fps_n;
   gint min_fps_d;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 /**
@@ -49,6 +52,9 @@ struct _GstBaseProjectMPrivate {
 
   GstClockTime first_frame_time;
   gboolean first_frame_received;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 /**
@@ -58,6 +64,9 @@ struct _GstBaseProjectMInitResult {
   projectm_handle ret_handle;
   projectm_playlist_handle ret_playlist;
   gboolean success;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 typedef struct _GstBaseProjectMPrivate GstBaseProjectMPrivate;

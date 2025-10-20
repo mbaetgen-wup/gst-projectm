@@ -26,10 +26,16 @@ struct _GstProjectM {
   GstBaseProjectMSettings settings;
 
   GstProjectMPrivate *priv;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 struct _GstProjectMClass {
   GstGLBaseAudioVisualizerClass parent_class;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 static void gst_projectm_set_property(GObject *object, guint prop_id,

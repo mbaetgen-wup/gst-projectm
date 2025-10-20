@@ -113,10 +113,10 @@ struct _GstGLBaseAudioVisualizer {
    */
   GstGLBaseAudioVisualizerMode is_live;
 
+  GstGLBaseAudioVisualizerPrivate *priv;
+
   /*< private >*/
   gpointer _padding[GST_PADDING];
-
-  GstGLBaseAudioVisualizerPrivate *priv;
 };
 
 /**
@@ -194,6 +194,9 @@ struct _GstAVRenderParams {
    * Current buffer presentation timestamp.
    */
   GstClockTime pts;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 G_END_DECLS

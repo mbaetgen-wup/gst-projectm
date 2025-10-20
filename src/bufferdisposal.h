@@ -39,6 +39,8 @@ typedef struct {
    */
   gboolean running;
 
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 } BDBufferDisposal;
 
 /**

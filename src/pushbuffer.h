@@ -120,6 +120,8 @@ typedef struct {
    */
   gboolean avg_jitter_init;
 
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 } PBPushBuffer;
 
 /**
