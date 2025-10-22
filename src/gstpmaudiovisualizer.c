@@ -863,7 +863,7 @@ static GstFlowReturn gst_pm_audio_visualizer_chain(GstPad *pad,
         GST_WARNING_OBJECT(scope,
                            "Segment format not TIME, skipping QoS checks");
       } else if (GST_CLOCK_TIME_IS_VALID(earliest_time) &&
-                 qostime < earliest_time) {
+                 qostime <= earliest_time) {
         GstClockTime stream_time, jitter;
         GstMessage *qos_msg;
 

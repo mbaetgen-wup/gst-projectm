@@ -4,6 +4,8 @@
 
 #include "bufferdisposal.h"
 
+#include <gst/gl/gl.h>
+
 GST_DEBUG_CATEGORY_STATIC(buffercleanup_debug);
 #define GST_CAT_DEFAULT buffercleanup_debug
 

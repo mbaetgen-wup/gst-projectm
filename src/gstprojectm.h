@@ -56,8 +56,6 @@ static gboolean gst_projectm_fill_gl_memory(GstAVRenderParams *render_data);
 
 static void gst_projectm_class_init(GstProjectMClass *klass);
 
-static gboolean plugin_init(GstPlugin *plugin);
-
 static gboolean gst_projectm_setup(GstGLBaseAudioVisualizer *glav);
 
 G_END_DECLS

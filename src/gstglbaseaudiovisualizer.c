@@ -39,7 +39,12 @@
 #include "gstpmaudiovisualizer.h"
 #include "renderbuffer.h"
 
+#include <gst/gst.h>
 #include <gst/gl/gl.h>
+
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#endif
 
 /**
  * SECTION:GstGLBaseAudioVisualizer
@@ -432,7 +437,7 @@ static gboolean is_pipeline_live(GstElement *element) {
 
   if (parent && GST_IS_PIPELINE(parent)) {
     pipeline = GST_PIPELINE(parent);
-    is_live = gst_pipeline_is_live(pipeline);
+    is_live = TRUE; // gst_pipeline_is_live(pipeline);
     gst_object_unref(parent);
   }
 

@@ -14,7 +14,7 @@ find_package(projectM4 4.1.0 REQUIRED Playlist)
 find_package(GStreamer REQUIRED COMPONENTS gstreamer-audio gstreamer-gl gstreamer-pbutils gstreamer-video)
 find_package(GLIB2 REQUIRED)
 
-add_library(gstprojectm SHARED
+add_library(gstprojectm MODULE
     src/bufferdisposal.h
     src/bufferdisposal.c
     src/debug.h

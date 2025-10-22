@@ -7,8 +7,9 @@
 #ifndef __GST_PROJECTM_BASE_H__
 #define __GST_PROJECTM_BASE_H__
 
-#include <gst/gl/gl.h>
 #include <gst/gst.h>
+#include <gst/gl/gstgl_fwd.h>
+#include <gst/video/video-info.h>
 #include <projectM-4/playlist.h>
 #include <projectM-4/projectM.h>
 
@@ -73,12 +74,6 @@ struct _GstBaseProjectMInitResult {
 typedef struct _GstBaseProjectMPrivate GstBaseProjectMPrivate;
 typedef struct _GstBaseProjectMSettings GstBaseProjectMSettings;
 typedef struct _GstBaseProjectMInitResult GstBaseProjectMInitResult;
-
-/**
- * One time initialization. Should be called once before any other function in
- * this unit.
- */
-void gst_projectm_base_init_once();
 
 /**
  * get_property delegate for projectM setting structs.

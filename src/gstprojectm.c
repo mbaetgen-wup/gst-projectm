@@ -2,9 +2,6 @@
 #include "config.h"
 #endif
 
-#ifdef USE_GLEW
-#include <GL/glew.h>
-#endif
 
 #include "gstprojectm.h"
 

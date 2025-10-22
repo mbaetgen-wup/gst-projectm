@@ -52,11 +52,12 @@
 #ifndef __RENDERBUFFER_H__
 #define __RENDERBUFFER_H__
 
-#include <gst/gl/gl.h>
-#include <gst/gst.h>
-
 #include "bufferdisposal.h"
 #include "pushbuffer.h"
+
+#include <gst/gst.h>
+#include <gst/gl/gstgl_fwd.h>
+#include <gst/gl/gstglcontext.h>
 
 G_BEGIN_DECLS
 

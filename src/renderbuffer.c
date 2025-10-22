@@ -7,6 +7,8 @@
 
 #include <math.h>
 
+#include <gst/gl/gl.h>
+
 GST_DEBUG_CATEGORY_STATIC(renderbuffer_debug);
 #define GST_CAT_DEFAULT renderbuffer_debug
 

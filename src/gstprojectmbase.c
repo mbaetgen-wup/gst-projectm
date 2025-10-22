@@ -9,7 +9,11 @@
 #include "gstglbaseaudiovisualizer.h"
 #include "gstprojectmconfig.h"
 
-#include <gst/gl/gstglframebuffer.h>
+#include <gst/gl/gl.h>
+
+#ifdef USE_GLEW
+#include <GL/glew.h>
+#endif
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_base_debug);
 #define GST_CAT_DEFAULT gst_projectm_base_debug
@@ -56,11 +60,6 @@ enum {
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
 #define DEFAULT_IS_LIVE "auto"
-
-void gst_projectm_base_init_once() {
-  GST_DEBUG_CATEGORY_INIT(gst_projectm_base_debug, "projectm_base", 0,
-                          "projectM visualizer plugin base");
-}
 
 static gboolean gst_projectm_base_log_preset_change(gpointer preset) {
   GST_INFO("Preset: %s", (char *)preset);
@@ -408,6 +407,13 @@ void gst_projectm_base_get_property(GObject *object,
 void gst_projectm_base_init(GstBaseProjectMSettings *settings,
                             GstBaseProjectMPrivate *priv) {
 
+  static gsize _debug_initialized = 0;
+  if (g_once_init_enter(&_debug_initialized))
+  {
+    GST_DEBUG_CATEGORY_INIT(gst_projectm_base_debug, "projectm_base", 0,
+                          "projectM visualizer plugin base");
+  }
+
   // Set default values for properties
   settings->preset_path = DEFAULT_PRESET_PATH;
   settings->texture_dir_path = DEFAULT_TEXTURE_DIR_PATH;
@@ -421,20 +427,16 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
   settings->shuffle_presets = DEFAULT_SHUFFLE_PRESETS;
   settings->min_fps_d = DEFAULT_MIN_FPS_D;
   settings->min_fps_n = DEFAULT_MIN_FPS_N;
-  settings->is_live = strdup(DEFAULT_IS_LIVE);
+  settings->is_live = g_strdup(DEFAULT_IS_LIVE);
 
   const gchar *meshSizeStr = DEFAULT_MESH_SIZE;
-  gint width, height;
 
-  gchar **parts = g_strsplit(meshSizeStr, ",", 2);
-
-  if (parts && g_strv_length(parts) == 2) {
-    width = atoi(parts[0]);
-    height = atoi(parts[1]);
-
-    settings->mesh_width = width;
-    settings->mesh_height = height;
-
+  if (meshSizeStr) {
+    gchar **parts = g_strsplit(meshSizeStr, ",", 2);
+    if (parts[0] && parts[1]) {
+      settings->mesh_width = atoi(parts[0]);
+      settings->mesh_height = atoi(parts[1]);
+    }
     g_strfreev(parts);
   }
 
