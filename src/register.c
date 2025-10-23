@@ -14,7 +14,6 @@
 
 #include <gst/gst.h>
 
-
 /*
  * This unit registers all gst elements from this plugin library to make them
  * available to GStreamer.
@@ -30,14 +29,7 @@ EXPORT gboolean plugin_init(GstPlugin *plugin) {
   return p1;
 }
 
-GST_PLUGIN_DEFINE (
-    GST_VERSION_MAJOR,
-    GST_VERSION_MINOR,
-    projectm,
-    "plugin to visualize audio using the ProjectM library",
-    plugin_init,
-    PACKAGE_VERSION,
-    PACKAGE_LICENSE,
-    PACKAGE_NAME,
-    PACKAGE_ORIGIN
-)
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, projectm,
+                  "plugin to visualize audio using the ProjectM library",
+                  plugin_init, PACKAGE_VERSION, PACKAGE_LICENSE, PACKAGE_NAME,
+                  PACKAGE_ORIGIN)

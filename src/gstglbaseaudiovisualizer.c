@@ -39,8 +39,8 @@
 #include "gstpmaudiovisualizer.h"
 #include "renderbuffer.h"
 
-#include <gst/gst.h>
 #include <gst/gl/gl.h>
+#include <gst/gst.h>
 
 #ifdef _WIN32
 #define strcasecmp _stricmp
@@ -78,15 +78,16 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
 #define DEFAULT_TIMESTAMP_OFFSET 0
 
 /**
- * Wait for up to 0.625 * fps frame duration for the previous frame to start
- * rendering, otherwise the previous frame is dropped.
+ * Wait for up to 0.625 * fps frame duration for a free slot to queue input
+ * audio for a frame. If the previous frame does not start rendering within this
+ * time, it is dropped.
  */
-#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 5
+#ifndef MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N
+#define MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N 5
 #endif
 
-#ifndef MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D
-#define MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D 8
+#ifndef MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D
+#define MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D 8
 #endif
 
 /*
@@ -418,11 +419,14 @@ static void gst_gl_base_audio_visualizer_set_context(GstElement *element,
 
 /**
  * Find the pipeline and determine if it is live.
+ * Not supported on Windows.
  *
  * @param element Plugin element.
  *
  * @return TRUE if the pipeline is live.
  */
+#ifndef _WIN32
+
 static gboolean is_pipeline_live(GstElement *element) {
   GstPipeline *pipeline = NULL;
   gboolean is_live = FALSE;
@@ -437,12 +441,14 @@ static gboolean is_pipeline_live(GstElement *element) {
 
   if (parent && GST_IS_PIPELINE(parent)) {
     pipeline = GST_PIPELINE(parent);
-    is_live = TRUE; // gst_pipeline_is_live(pipeline);
+    is_live = gst_pipeline_is_live(pipeline);
     gst_object_unref(parent);
   }
 
   return is_live;
 }
+
+#endif
 
 static gboolean
 gst_gl_base_audio_visualizer_default_gl_start(GstGLBaseAudioVisualizer *glav) {
@@ -484,8 +490,12 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
   } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
     glav->priv->is_realtime = TRUE;
   } else {
-    // auto detect
+    // auto-detect, unless we're on windows
+#ifdef _WIN32
+    glav->priv->is_realtime = FALSE;
+#else
     glav->priv->is_realtime = is_pipeline_live(GST_ELEMENT(data));
+#endif
   }
 
   // render loop QoS is disabled for offline rendering
@@ -628,8 +638,8 @@ static GstFlowReturn gst_gl_base_audio_visualizer_fill(
     // limit wait based on fps factor, make sure we never wait too long in order
     // to keep in sync
     args.max_wait = (GstClockTimeDiff)gst_util_uint64_scale_int(
-        frame_duration, MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N,
-        MAX_RENDER_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D);
+        frame_duration, MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_N,
+        MAX_QUEUE_WAIT_TIME_IN_FRAME_DURATIONS_D);
 
     g_rec_mutex_unlock(&glav->priv->context_lock);
 

@@ -274,20 +274,19 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
   gint slot_index = 0;
 
   gboolean found_slot = FALSE;
-  while (!found_slot) {
+  while (!found_slot && g_atomic_int_get(&state->running)) {
 
     // next slot to insert to
     slot_index = (state->render_write_idx + 1) % NUM_RENDER_SLOTS;
-    slot = &state->slots[slot_index];
 
     // jump over busy slot that's currently rendering if needed
-    if (slot->state == RB_BUSY) {
+    if (state->slots[slot_index].state == RB_BUSY) {
       slot_index = (state->render_write_idx + 2) % NUM_RENDER_SLOTS;
     }
+    slot = &state->slots[slot_index];
 
     // in case there is only one slot, it may still be busy
-    found_slot =
-        slot->state != RB_BUSY && (wait_is_limited || slot->state == RB_EMPTY);
+    found_slot = slot->state == RB_EMPTY;
 
     if (!found_slot) {
       if (wait_is_limited) {
@@ -317,6 +316,10 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
     }
   }
 
+  if (slot == NULL || !g_atomic_int_get(&state->running)) {
+    return RB_STOPPED;
+  }
+
   if (slot->state == RB_BUSY) {
     // out of time, and we still can't schedule
     g_mutex_unlock(&state->slot_lock);
@@ -327,7 +330,13 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
 
   // evict if already in use and clear buffers
   const gboolean is_evicted = slot->state == RB_READY;
+  // optimization: set slot to empty so render thread does not pick this up yet
+  // this is safe, since we're being called by the chain function only (single
+  // producer)
+  slot->state = RB_EMPTY;
+  g_mutex_unlock(&state->slot_lock);
 
+  // do heavy stuff
   if (slot->in_audio != NULL) {
     gst_buffer_unref(slot->in_audio);
   }
@@ -338,23 +347,20 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args) {
   }
 
   // populate slot
-  slot->state = RB_READY;
   slot->gl_result = FALSE;
   slot->pts = args->pts;
   slot->frame_duration = args->frame_duration;
   slot->in_audio = gst_buffer_copy_deep(args->in_audio);
 
+  // lock and mark ready
+  g_mutex_lock(&state->slot_lock);
+  slot->state = RB_READY;
+
   // signal render thread that there is something to do
   g_cond_signal(&state->render_queued_cond);
   g_mutex_unlock(&state->slot_lock);
 
-  RBQueueResult result;
-  if (found_slot) {
-    result = is_evicted == FALSE ? RB_SUCCESS : RB_EVICTED;
-  } else {
-    result = RB_TIMEOUT;
-  }
-  return result;
+  return is_evicted == FALSE ? RB_SUCCESS : RB_EVICTED;
 }
 
 void rb_queue_render_task_log(RBQueueArgs *args) {
@@ -391,7 +397,7 @@ void rb_queue_render_task_log(RBQueueArgs *args) {
     break;
   }
 
-  case RB_SUCCESS:
+  default:
     break;
   }
 }
@@ -444,7 +450,7 @@ gboolean rb_is_render_too_late(GstElement *element, const GstClockTime latency,
  * @param state Render buffer to use.
  * @param slot Prepared slot to render.
  *
- * @return Render duration.
+ * @return Time it took to render the frame.
  */
 GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
   // measure rendering for QoS
@@ -453,21 +459,21 @@ GstClockTime rb_render_slot(RBRenderBuffer *state, RBSlot *slot) {
   // Dispatch slot to GL thread
   gst_gl_context_thread_add(state->gl_context, slot->gl_fill_func, slot);
 
-  const GstClockTime render_time =
+  const GstClockTime render_duration =
       GST_CLOCK_DIFF(render_start, gst_util_get_timestamp());
 
   // render took longer than the frame duration, this is a problem for
   // real-time rendering if it happens too often
-  if (render_time > slot->frame_duration) {
+  if (render_duration > slot->frame_duration) {
     GST_DEBUG_OBJECT(
         state->plugin,
         "Render GL frame took too long: %" GST_TIME_FORMAT
         ", frame-duration: %" GST_TIME_FORMAT ", pts: %" GST_TIME_FORMAT,
-        GST_TIME_ARGS(render_time), GST_TIME_ARGS(slot->frame_duration),
+        GST_TIME_ARGS(render_duration), GST_TIME_ARGS(slot->frame_duration),
         GST_TIME_ARGS(slot->pts));
   }
 
-  return render_time;
+  return render_duration;
 }
 
 /**

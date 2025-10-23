@@ -55,9 +55,9 @@
 #include "bufferdisposal.h"
 #include "pushbuffer.h"
 
-#include <gst/gst.h>
 #include <gst/gl/gstgl_fwd.h>
 #include <gst/gl/gstglcontext.h>
+#include <gst/gst.h>
 
 G_BEGIN_DECLS
 
@@ -68,7 +68,7 @@ G_BEGIN_DECLS
  * available for queuing the next audio buffer to render.
  *
  * Note: Increasing the number of slots >2 is not fully supported since
- * it would require handling of PTS offset changes. See inline code comments.
+ * it would require handling of PTS offset changes. See comments in code.
  *
  * Valid values:
  *  1 : Wait for previous render to complete before scheduling.
@@ -120,7 +120,11 @@ typedef enum {
   /**
    * Buffer could not be queued because the allowed wait could not be met.
    */
-  RB_TIMEOUT
+  RB_TIMEOUT,
+  /**
+   * Buffer could not be queued because the buffer was stopped.
+   */
+  RB_STOPPED
 } RBQueueResult;
 
 /**
@@ -374,6 +378,8 @@ void rb_dispose_render_buffer(RBRenderBuffer *state);
  * Queue an audio buffer for rendering. The queuing is guaranteed to return
  * within the given max time budget. The buffer will be dropped if queuing is
  * not possible within the given time budget.
+ * Note: Single producer function. Not thread safe, should be called from chain
+ * function only!
  *
  * @param args Audio buffer and frame details for rendering. The render buffer
  * does not take ownership of the given pointer. The given audio buffer is
@@ -385,6 +391,8 @@ RBQueueResult rb_queue_render_task(RBQueueArgs *args);
  * Queue an audio buffer for rendering. The queuing is guaranteed to return
  * within the given max time budget. The buffer will be dropped if queuing is
  * not possible within the given time budget.
+ * Note: Single producer function. Not thread safe, should be called from chain
+ * function only!
  *
  * Convenience function that also handles queuing result by logging if frames
  * are dropped (DEBUG level).

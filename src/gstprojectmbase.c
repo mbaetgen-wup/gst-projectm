@@ -408,10 +408,9 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
                             GstBaseProjectMPrivate *priv) {
 
   static gsize _debug_initialized = 0;
-  if (g_once_init_enter(&_debug_initialized))
-  {
+  if (g_once_init_enter(&_debug_initialized)) {
     GST_DEBUG_CATEGORY_INIT(gst_projectm_base_debug, "projectm_base", 0,
-                          "projectM visualizer plugin base");
+                            "projectM visualizer plugin base");
   }
 
   // Set default values for properties

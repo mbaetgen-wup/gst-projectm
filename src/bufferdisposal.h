@@ -7,8 +7,8 @@
 #ifndef __BUFFERDISPOSAL_H__
 #define __BUFFERDISPOSAL_H__
 
-#include <gst/gst.h>
 #include <gst/gl/gstgl_fwd.h>
+#include <gst/gst.h>
 
 typedef struct {
 

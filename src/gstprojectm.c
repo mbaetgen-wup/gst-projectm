@@ -2,7 +2,6 @@
 #include "config.h"
 #endif
 
-
 #include "gstprojectm.h"
 
 #include "debug.h"

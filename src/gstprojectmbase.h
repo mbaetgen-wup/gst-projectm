@@ -7,8 +7,8 @@
 #ifndef __GST_PROJECTM_BASE_H__
 #define __GST_PROJECTM_BASE_H__
 
-#include <gst/gst.h>
 #include <gst/gl/gstgl_fwd.h>
+#include <gst/gst.h>
 #include <gst/video/video-info.h>
 #include <projectM-4/playlist.h>
 #include <projectM-4/projectM.h>

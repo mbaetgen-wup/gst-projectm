@@ -159,6 +159,7 @@ gst-launch-1.0 -e \
             preset=$PRESET_PATH \
             texture-dir=$TEXTURE_DIR \
             preset-duration=$PRESET_DURATION \
+            is-live=false \
             mesh-size=${MESH_X},${MESH_Y} ! \
             identity sync=false ! videoconvert ! videorate ! \
             video/x-raw\(memory:GLMemory\),framerate=$FRAMERATE/1,width=$VIDEO_WIDTH,height=$VIDEO_HEIGHT ! \

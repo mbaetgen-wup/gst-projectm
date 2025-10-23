@@ -60,7 +60,7 @@ The documentation has been organized into distinct files, each dedicated to a sp
 Once the plugin has been installed, you can use it something like this to render to an OpenGL window:
 
 ```shell
-gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=10 mesh-size=48,32 ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
+gst-launch pipewiresrc ! queue ! audioconvert ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! projectm preset=/usr/local/share/projectM/presets preset-duration=10 mesh-size=48,32 is-live=true ! 'video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1' ! glimagesink sync=false
 ```
 
 To render from a live source in real-time to a gl window, an identity element can be used to provide a proper timestamp source for the pipeline. This example also includes a texture directory: 
@@ -267,8 +267,9 @@ A **fixed number of audio samples is consumed per video frame**.
 
 **Example:** `735 samples per frame at 44.1 kHz = ~60 FPS.`
 
-**Note:** Live pipelines are auto-detected by the plugin. For cases where auto-detection is not appropriate,
-the `is-live` property can be configured.
+**Note:** Live pipelines are auto-detected by the plugin if Gstreamer supports it (not supported on Windows). 
+For Windows or other cases where auto-detection is not appropriate, the `is-live` property can be configured.
+The default mode is offline rendering, `is-live=false`.
 
 **Live pipelines only:** Frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
 pipeline caps FPS.
