@@ -1187,16 +1187,6 @@ gst_pm_audio_visualizer_parent_change_state(GstElement *element,
   if (ret == GST_STATE_CHANGE_FAILURE)
     return ret;
 
-  switch (transition) {
-  case GST_STATE_CHANGE_PAUSED_TO_READY:
-    gst_pm_audio_visualizer_set_allocation(scope, NULL, NULL, NULL, NULL);
-    break;
-  case GST_STATE_CHANGE_READY_TO_NULL:
-    break;
-  default:
-    break;
-  }
-
   GstPMAudioVisualizerClass *klass = GST_PM_AUDIO_VISUALIZER_GET_CLASS(scope);
   return klass->change_state(element, transition);
 }
@@ -1254,4 +1244,8 @@ void gst_pm_audio_visualizer_adjust_fps(GstPMAudioVisualizer *scope,
 
     g_idle_add(log_fps_change, message);
   }
+}
+
+void gst_pm_audio_visualizer_dispose_buffer_pool(GstPMAudioVisualizer* scope) {
+  gst_pm_audio_visualizer_set_allocation(scope, NULL, NULL, NULL, NULL);
 }

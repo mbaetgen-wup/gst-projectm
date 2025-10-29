@@ -122,7 +122,7 @@ G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
                                 "glbaseaudiovisualizer", 0,
                                 "glbaseaudiovisualizer element"););
 
-static void gst_gl_base_audio_visualizer_finalize(GObject *object);
+static void gst_gl_base_audio_visualizer_dispose(GObject *object);
 static void gst_gl_base_audio_visualizer_set_property(GObject *object,
                                                       guint prop_id,
                                                       const GValue *value,
@@ -222,7 +222,7 @@ gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
   GstPMAudioVisualizerClass *pmav_class = GST_PM_AUDIO_VISUALIZER_CLASS(klass);
   GstElementClass *element_class = GST_ELEMENT_CLASS(klass);
 
-  gobject_class->finalize = gst_gl_base_audio_visualizer_finalize;
+  gobject_class->dispose = gst_gl_base_audio_visualizer_dispose;
   gobject_class->set_property = gst_gl_base_audio_visualizer_set_property;
   gobject_class->get_property = gst_gl_base_audio_visualizer_get_property;
 
@@ -313,13 +313,13 @@ static void gst_gl_base_audio_visualizer_init(GstGLBaseAudioVisualizer *glav) {
   gst_gl_base_audio_visualizer_start(glav);
 }
 
-static void gst_gl_base_audio_visualizer_finalize(GObject *object) {
+static void gst_gl_base_audio_visualizer_dispose(GObject *object) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(object);
   gst_gl_base_audio_visualizer_stop(glav);
 
   g_rec_mutex_clear(&glav->priv->context_lock);
 
-  G_OBJECT_CLASS(parent_class)->finalize(object);
+  G_OBJECT_CLASS(parent_class)->dispose(object);
 }
 
 static void gst_gl_base_audio_visualizer_set_property(GObject *object,
@@ -543,6 +543,8 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
   if (glav->priv->fbo) {
     gst_object_unref(glav->priv->fbo);
   }
+
+  gst_pm_audio_visualizer_dispose_buffer_pool(GST_PM_AUDIO_VISUALIZER(data));
 }
 
 static gboolean gst_gl_base_audio_visualizer_default_fill_gl_memory(
