@@ -491,7 +491,7 @@ static void gst_gl_base_audio_visualizer_gl_start(GstGLContext *context,
     glav->priv->is_realtime = TRUE;
   } else {
     // auto-detect, unless we're on windows
-#ifdef _WIN32
+#if defined(_WIN32) || !GST_CHECK_VERSION(1, 24, 0)
     glav->priv->is_realtime = FALSE;
 #else
     glav->priv->is_realtime = is_pipeline_live(GST_ELEMENT(data));
