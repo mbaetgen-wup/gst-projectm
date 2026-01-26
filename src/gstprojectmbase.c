@@ -511,6 +511,85 @@ static projectm_log_level gst_projectm_base_get_log_level() {
   return gst_projectm_base_level_from_gst_debug_level(gst_lvl);
 }
 
+/**
+ * Log message to gst.
+ *
+ * @param message Message to log.
+ * @param severity projectM severity.
+ * @param userData Plugin pointer.
+ */
+static void gst_projectm_base_log_message(const char *message,
+                                          projectm_log_level severity,
+                                          void *userData) {
+  switch (severity) {
+  case PROJECTM_LOG_LEVEL_FATAL:
+  case PROJECTM_LOG_LEVEL_ERROR:
+    GST_ERROR(message);
+    break;
+  case PROJECTM_LOG_LEVEL_WARN:
+    GST_WARNING(message);
+    break;
+  case PROJECTM_LOG_LEVEL_TRACE:
+  case PROJECTM_LOG_LEVEL_DEBUG:
+    GST_DEBUG(message);
+    break;
+  case PROJECTM_LOG_LEVEL_NOTSET:
+  case PROJECTM_LOG_LEVEL_INFO:
+    GST_INFO(message);
+    break;
+  }
+}
+
+/**
+ * Map gst log level for this element to projectM log level.
+ *
+ * @param lvl Gst log level.
+ * @return ProjectM log level.
+ */
+static projectm_log_level
+gst_projectm_base_level_from_gst_debug_level(GstDebugLevel lvl) {
+  switch (lvl) {
+  case GST_LEVEL_ERROR:
+    return PROJECTM_LOG_LEVEL_ERROR;
+
+  case GST_LEVEL_WARNING:
+    return PROJECTM_LOG_LEVEL_WARN;
+
+  case GST_LEVEL_FIXME:
+    return PROJECTM_LOG_LEVEL_WARN;
+
+  case GST_LEVEL_INFO:
+    return PROJECTM_LOG_LEVEL_INFO;
+
+  case GST_LEVEL_DEBUG:
+  case GST_LEVEL_LOG:
+    return PROJECTM_LOG_LEVEL_DEBUG;
+
+  case GST_LEVEL_TRACE:
+  case GST_LEVEL_MEMDUMP:
+    return PROJECTM_LOG_LEVEL_TRACE;
+
+  case GST_LEVEL_NONE:
+  default:
+    return PROJECTM_LOG_LEVEL_NOTSET;
+  }
+}
+
+/**
+ * Get log level for projectM base category with fall back to global default
+ * threshold.
+ */
+static projectm_log_level gst_projectm_base_get_log_level() {
+  GstDebugLevel gst_lvl =
+      gst_debug_category_get_threshold(gst_projectm_base_debug);
+
+  if (gst_lvl == GST_LEVEL_NONE) {
+    gst_lvl = gst_debug_get_default_threshold();
+  }
+
+  return gst_projectm_base_level_from_gst_debug_level(gst_lvl);
+}
+
 void gst_projectm_base_init(GstBaseProjectMSettings *settings,
                             GstBaseProjectMPrivate *priv) {
 
