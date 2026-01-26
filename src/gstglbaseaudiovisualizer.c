@@ -417,16 +417,16 @@ static void gst_gl_base_audio_visualizer_set_context(GstElement *element,
   GST_ELEMENT_CLASS(parent_class)->set_context(element, context);
 }
 
+#if !defined(_WIN32) && GST_CHECK_VERSION(1, 24, 0)
+
 /**
  * Find the pipeline and determine if it is live.
- * Not supported on Windows.
+ * Not supported on Windows, gst < 1.24.
  *
  * @param element Plugin element.
  *
  * @return TRUE if the pipeline is live.
  */
-#ifndef _WIN32
-
 static gboolean is_pipeline_live(GstElement *element) {
   GstPipeline *pipeline = NULL;
   gboolean is_live = FALSE;

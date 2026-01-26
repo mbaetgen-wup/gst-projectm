@@ -268,7 +268,7 @@ A **fixed number of audio samples is consumed per video frame**.
 **Example:** `735 samples per frame at 44.1 kHz = ~60 FPS.`
 
 **Note:** Live pipelines are auto-detected by the plugin if Gstreamer supports it (not supported on Windows). 
-For Windows or other cases where auto-detection is not appropriate, the `is-live` property can be configured.
+For Windows, gstreamer prior to version 1.24 or other cases where auto-detection is not appropriate, the `is-live` property can be configured.
 The default mode is offline rendering, `is-live=false`.
 
 **Live pipelines only:** Frames may be dropped or rendering FPS adjusted if frame rendering can't keep up with 
