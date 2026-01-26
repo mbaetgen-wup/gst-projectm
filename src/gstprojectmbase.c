@@ -115,6 +115,31 @@ static void gst_projectm_base_handle_preset_change(bool is_hard_cut,
   }
 }
 
+/**
+ * Lookup GL function pointer through gst-gl.
+ *
+ * @param name Function name.
+ * @param user_data Gst GL context.
+ *
+ * @return Function pointer lookup result.
+ */
+static void *gst_projectm_base_get_proc_address(const char *name,
+                                                void *user_data) {
+  if (!name) {
+    return NULL;
+  }
+
+  GstGLContext *ctx = (GstGLContext *)user_data;
+  if (ctx) {
+    gpointer p = gst_gl_context_get_proc_address(ctx, name);
+    GST_TRACE("Loaded %s, result %p", name, (void *)p);
+    if (p) {
+      return (void *)p;
+    }
+  }
+  return NULL;
+}
+
 static GstBaseProjectMInitResult
 projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
               GstVideoInfo *vinfo) {
@@ -124,9 +149,11 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
   result.ret_playlist = NULL;
   result.success = FALSE;
 
+  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(plugin);
   // Create ProjectM instance
   GST_DEBUG_OBJECT(plugin, "Creating projectM instance..");
-  result.ret_handle = projectm_create();
+  result.ret_handle = projectm_create_with_opengl_load_proc(
+      gst_projectm_base_get_proc_address, glav->context);
 
   if (!result.ret_handle) {
     GST_DEBUG_OBJECT(
@@ -404,6 +431,85 @@ void gst_projectm_base_get_property(GObject *object,
   }
 }
 
+/**
+ * Log message to gst.
+ *
+ * @param message Message to log.
+ * @param severity projectM severity.
+ * @param userData Plugin pointer.
+ */
+static void gst_projectm_base_log_message(const char *message,
+                                          projectm_log_level severity,
+                                          void *userData) {
+  switch (severity) {
+  case PROJECTM_LOG_LEVEL_FATAL:
+  case PROJECTM_LOG_LEVEL_ERROR:
+    GST_ERROR(message);
+    break;
+  case PROJECTM_LOG_LEVEL_WARN:
+    GST_WARNING(message);
+    break;
+  case PROJECTM_LOG_LEVEL_TRACE:
+  case PROJECTM_LOG_LEVEL_DEBUG:
+    GST_DEBUG(message);
+    break;
+  case PROJECTM_LOG_LEVEL_NOTSET:
+  case PROJECTM_LOG_LEVEL_INFO:
+    GST_INFO(message);
+    break;
+  }
+}
+
+/**
+ * Map gst log level for this element to projectM log level.
+ *
+ * @param lvl Gst log level.
+ * @return ProjectM log level.
+ */
+static projectm_log_level
+gst_projectm_base_level_from_gst_debug_level(GstDebugLevel lvl) {
+  switch (lvl) {
+  case GST_LEVEL_ERROR:
+    return PROJECTM_LOG_LEVEL_ERROR;
+
+  case GST_LEVEL_WARNING:
+    return PROJECTM_LOG_LEVEL_WARN;
+
+  case GST_LEVEL_FIXME:
+    return PROJECTM_LOG_LEVEL_WARN;
+
+  case GST_LEVEL_INFO:
+    return PROJECTM_LOG_LEVEL_INFO;
+
+  case GST_LEVEL_DEBUG:
+  case GST_LEVEL_LOG:
+    return PROJECTM_LOG_LEVEL_DEBUG;
+
+  case GST_LEVEL_TRACE:
+  case GST_LEVEL_MEMDUMP:
+    return PROJECTM_LOG_LEVEL_TRACE;
+
+  case GST_LEVEL_NONE:
+  default:
+    return PROJECTM_LOG_LEVEL_NOTSET;
+  }
+}
+
+/**
+ * Get log level for projectM base category with fall back to global default
+ * threshold.
+ */
+static projectm_log_level gst_projectm_base_get_log_level() {
+  GstDebugLevel gst_lvl =
+      gst_debug_category_get_threshold(gst_projectm_base_debug);
+
+  if (gst_lvl == GST_LEVEL_NONE) {
+    gst_lvl = gst_debug_get_default_threshold();
+  }
+
+  return gst_projectm_base_level_from_gst_debug_level(gst_lvl);
+}
+
 void gst_projectm_base_init(GstBaseProjectMSettings *settings,
                             GstBaseProjectMPrivate *priv) {
 
@@ -411,6 +517,15 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
   if (g_once_init_enter(&_debug_initialized)) {
     GST_DEBUG_CATEGORY_INIT(gst_projectm_base_debug, "projectm_base", 0,
                             "projectM visualizer plugin base");
+
+    // configure projectM logging
+    projectm_log_level log_level = gst_projectm_base_get_log_level();
+
+    projectm_set_log_level(log_level == PROJECTM_LOG_LEVEL_NOTSET
+                               ? PROJECTM_LOG_LEVEL_INFO
+                               : log_level,
+                           false);
+    projectm_set_log_callback(&gst_projectm_base_log_message, false, NULL);
   }
 
   // Set default values for properties
