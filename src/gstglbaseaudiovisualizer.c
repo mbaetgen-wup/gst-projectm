@@ -58,12 +58,14 @@
  * #GstGLBaseAudioVisualizer handles the nitty gritty details of retrieving an
  * OpenGL context. It also provides `gl_start()` and `gl_stop()` virtual methods
  * that ensure an OpenGL context is available and current in the calling thread
- * for initializing and cleaning up OpenGL resources. The `render`
- * virtual method of the GstPMAudioVisualizer is implemented to perform OpenGL
+ * for initializing and cleaning up OpenGL resources.
+ *
+ * The `render` virtual method of the GstPMAudioVisualizer is pre-implemented to perform OpenGL
  * rendering. The implementer provides an implementation for fill_gl_memory to
- * render directly to gl memory. Rendering is performed blocking for
- * offline rendering and asynchronously for real-time rendering.
- * The plugin detects if the pipeline clock is a real-time clock.
+ * render directly to gl memory.
+ *
+ * Rendering is performed blocking for offline rendering and asynchronously for real-time rendering.
+ * The plugin detects if the pipeline clock is a real-time clock, if possible.
  *
  * Typical plug-in call order for implementer-provided functions:
  * - gl_start (once)
