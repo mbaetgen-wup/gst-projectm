@@ -36,9 +36,31 @@ void bd_gl_buffer_dispose_gl(GstGLContext *context, gpointer buf) {
   gst_buffer_unref(GST_BUFFER(buffer));
 }
 
+static gboolean bd_buffer_needs_gl_dispose(GstBuffer *buffer) {
+  if (buffer == NULL)
+    return FALSE;
+
+  if (gst_buffer_get_gl_sync_meta(buffer) != NULL)
+    return TRUE;
+
+  if (gst_buffer_n_memory(buffer) > 0) {
+    GstMemory *mem = gst_buffer_peek_memory(buffer, 0);
+    if (mem && gst_is_gl_memory(mem))
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
 void bd_dispose_gl_buffer(BDBufferDisposal *state, GstBuffer *buf) {
   g_assert(state != NULL);
   g_assert(buf != NULL);
+
+  /* If this isn't a GL-backed buffer, we can dispose directly. */
+  if (!bd_buffer_needs_gl_dispose(buf)) {
+    gst_buffer_unref(buf);
+    return;
+  }
   if (gst_gl_context_get_current() == state->gl_context) {
     bd_gl_buffer_dispose_gl(state->gl_context, buf);
   } else {
