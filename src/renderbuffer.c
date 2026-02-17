@@ -494,6 +494,11 @@ static GstFlowReturn rb_handle_push_buffer(RBRenderBuffer *state,
                                            const GstClockTime frame_duration) {
   g_assert(state != NULL);
 
+  if (outbuf == NULL) {
+    GST_WARNING_OBJECT(state->plugin, "NULL buffer from renderer, dropping.");
+    return GST_FLOW_OK;
+  }
+
   if (gst_buffer_get_size(outbuf) == 0) {
     GST_WARNING_OBJECT(state->plugin, "Empty or invalid buffer, dropping.");
     bd_dispose_gl_buffer(&state->buffer_disposal, outbuf);

@@ -42,6 +42,13 @@
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
 
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+#include <gst/allocators/gstdmabuf.h>
+#include <gst/gl/egl/gsteglimage.h>
+#include <gst/video/gstvideometa.h>
+#include <unistd.h>
+#endif
+
 #ifdef _WIN32
 #define strcasecmp _stricmp
 #endif
@@ -60,12 +67,13 @@
  * that ensure an OpenGL context is available and current in the calling thread
  * for initializing and cleaning up OpenGL resources.
  *
- * The `render` virtual method of the GstPMAudioVisualizer is pre-implemented to perform OpenGL
- * rendering. The implementer provides an implementation for fill_gl_memory to
- * render directly to gl memory.
+ * The `render` virtual method of the GstPMAudioVisualizer is pre-implemented to
+ * perform OpenGL rendering. The implementer provides an implementation for
+ * fill_gl_memory to render directly to gl memory.
  *
- * Rendering is performed blocking for offline rendering and asynchronously for real-time rendering.
- * The plugin detects if the pipeline clock is a real-time clock, if possible.
+ * Rendering is performed blocking for offline rendering and asynchronously for
+ * real-time rendering. The plugin detects if the pipeline clock is a real-time
+ * clock, if possible.
  *
  * Typical plug-in call order for implementer-provided functions:
  * - gl_start (once)
@@ -110,10 +118,144 @@ struct _GstGLBaseAudioVisualizerPrivate {
   GstGLFramebuffer *fbo;
   RBRenderBuffer render_buffer;
   gboolean is_realtime;
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  gboolean output_dmabuf;
+  GstAllocator *dmabuf_allocator;
+  GQuark dmabuf_qdata_quark;
+#endif
 };
 
 /* Properties */
 enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D, PROP_PIPELINE_LIVE };
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+
+typedef struct {
+  GstMemory *memory;
+  gint stride;
+  gsize offset;
+  gsize size;
+} ProjectMDmabufInfo;
+
+static gboolean _caps_has_feature(GstCaps *caps, const gchar *feature) {
+  guint i, n;
+
+  if (caps == NULL)
+    return FALSE;
+
+  n = gst_caps_get_size(caps);
+  for (i = 0; i < n; i++) {
+    const GstCapsFeatures *features = gst_caps_get_features(caps, i);
+    if (features && gst_caps_features_contains(features, feature))
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+static void _dmabuf_info_free(gpointer data) {
+  ProjectMDmabufInfo *info = (ProjectMDmabufInfo *)data;
+  if (info == NULL)
+    return;
+  if (info->memory)
+    gst_memory_unref(info->memory);
+  g_free(info);
+}
+
+static GstCaps *_copy_caps_with_gl_memory(GstCaps *caps) {
+  guint i, n;
+  GstCaps *copy = gst_caps_copy(caps);
+
+  n = gst_caps_get_size(copy);
+  for (i = 0; i < n; i++) {
+    GstCapsFeatures *features = gst_caps_features_new("memory:GLMemory", NULL);
+    gst_caps_set_features(copy, i, features);
+  }
+
+  return copy;
+}
+
+static GstBuffer *_gl_buffer_to_dmabuf(GstGLBaseAudioVisualizer *glav,
+                                       GstBuffer *gl_buf) {
+  GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(glav);
+  GstMemory *mem0 = NULL;
+  GstEGLImage *image = NULL;
+  ProjectMDmabufInfo *info = NULL;
+  GstBuffer *out = NULL;
+  gsize offsets[GST_VIDEO_MAX_PLANES] = {0};
+  gint strides[GST_VIDEO_MAX_PLANES] = {0};
+
+  g_return_val_if_fail(glav != NULL, NULL);
+  g_return_val_if_fail(gl_buf != NULL, NULL);
+
+  if (glav->priv->dmabuf_qdata_quark == 0)
+    glav->priv->dmabuf_qdata_quark =
+        g_quark_from_static_string("projectm-dmabuf-info");
+
+  info = gst_mini_object_get_qdata(GST_MINI_OBJECT_CAST(gl_buf),
+                                   glav->priv->dmabuf_qdata_quark);
+
+  if (info == NULL) {
+    gint fd = -1;
+    gint stride = 0;
+    gsize offset = 0;
+    guint height = GST_VIDEO_INFO_HEIGHT(&pmav->vinfo);
+    gsize size = 0;
+
+    mem0 = gst_buffer_peek_memory(gl_buf, 0);
+    if (mem0 == NULL || !gst_is_gl_memory(mem0))
+      return NULL;
+
+    image = gst_egl_image_from_texture(glav->context, GST_GL_MEMORY_CAST(mem0),
+                                       NULL);
+    if (image == NULL)
+      return NULL;
+
+    if (!gst_egl_image_export_dmabuf(image, &fd, &stride, &offset)) {
+      gst_egl_image_unref(image);
+      return NULL;
+    }
+    gst_egl_image_unref(image);
+    image = NULL;
+
+    size = offset + ((gsize)stride * (gsize)height);
+
+    info = g_new0(ProjectMDmabufInfo, 1);
+    info->stride = stride;
+    info->offset = offset;
+    info->size = size;
+
+    info->memory =
+        gst_dmabuf_allocator_alloc(glav->priv->dmabuf_allocator, fd, size);
+    if (info->memory == NULL) {
+      close(fd);
+      g_free(info);
+      return NULL;
+    }
+
+    gst_mini_object_set_qdata(GST_MINI_OBJECT_CAST(gl_buf),
+                              glav->priv->dmabuf_qdata_quark, info,
+                              _dmabuf_info_free);
+  }
+
+  out = gst_buffer_new();
+  gst_buffer_append_memory(out, gst_memory_ref(info->memory));
+
+  offsets[0] = info->offset;
+  strides[0] = info->stride;
+  gst_buffer_add_video_meta_full(
+      out, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_INFO_FORMAT(&pmav->vinfo),
+      GST_VIDEO_INFO_WIDTH(&pmav->vinfo), GST_VIDEO_INFO_HEIGHT(&pmav->vinfo),
+      1, offsets, strides);
+
+  /* Keep the original GL buffer alive until the DMABuf consumer is finished. */
+  gst_buffer_add_parent_buffer_meta(out, gl_buf);
+
+  return out;
+}
+
+#endif
 
 #define gst_gl_base_audio_visualizer_parent_class parent_class
 G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
@@ -309,6 +451,12 @@ static void gst_gl_base_audio_visualizer_init(GstGLBaseAudioVisualizer *glav) {
 
   glav->min_fps_n = DEFAULT_MIN_FPS_N;
   glav->min_fps_d = DEFAULT_MIN_FPS_D;
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  glav->priv->output_dmabuf = FALSE;
+  glav->priv->dmabuf_allocator = NULL;
+  glav->priv->dmabuf_qdata_quark = 0;
+#endif
 
   g_rec_mutex_init(&glav->priv->context_lock);
 
@@ -570,11 +718,19 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
 
   GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(render_slot->plugin);
 
-  GstBuffer *out_buf;
+  GstBuffer *out_buf = NULL;
   GstVideoFrame out_video;
 
   // obtain output buffer from the (GL texture backed) pool
-  gst_pm_audio_visualizer_util_prepare_output_buffer(pmav, &out_buf);
+  GstFlowReturn flow_ret =
+      gst_pm_audio_visualizer_util_prepare_output_buffer(pmav, &out_buf);
+  if (flow_ret != GST_FLOW_OK || out_buf == NULL) {
+    GST_WARNING_OBJECT(glav, "Failed to acquire output buffer from pool (%s)",
+                       gst_flow_get_name(flow_ret));
+    render_slot->gl_result = FALSE;
+    render_slot->out_buf = NULL;
+    return;
+  }
 
   // Check for GL sync meta
   GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
@@ -585,9 +741,16 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
   // }
 
   // map output video frame to buffer outbuf with gl flags
-  gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
-                      GST_MAP_WRITE | GST_MAP_GL |
-                          GST_VIDEO_FRAME_MAP_FLAG_NO_REF);
+  if (!gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
+                           GST_MAP_WRITE | GST_MAP_GL |
+                               GST_VIDEO_FRAME_MAP_FLAG_NO_REF)) {
+    GST_ERROR_OBJECT(glav, "Failed to map GL video frame");
+    render_slot->gl_result = FALSE;
+    render_slot->out_buf = NULL;
+    gst_buffer_unref(out_buf);
+    out_buf = NULL;
+    return;
+  }
 
   GstAVRenderParams ds_rd;
   ds_rd.in_audio = render_slot->in_audio;
@@ -606,9 +769,33 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
   if (sync_meta)
     gst_gl_sync_meta_set_sync_point(sync_meta, glav->context);
 
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  if (glav->priv->output_dmabuf) {
+    GstBuffer *dmabuf_buf = NULL;
+
+    dmabuf_buf = _gl_buffer_to_dmabuf(glav, out_buf);
+    if (dmabuf_buf == NULL) {
+      GST_ERROR_OBJECT(glav, "Failed to export GL buffer to DMABuf");
+      render_slot->gl_result = FALSE;
+      render_slot->out_buf = out_buf;
+      out_buf = NULL;
+      // todo: gst_video_frame_unmap(&out_video); ?
+      return;
+    }
+
+    render_slot->out_buf = dmabuf_buf;
+    gst_buffer_unref(out_buf);
+    out_buf = NULL;
+  } else {
+    render_slot->out_buf = out_buf;
+    out_buf = NULL;
+  }
+#else
   render_slot->out_buf = out_buf;
-  // ownership transferred
   out_buf = NULL;
+#endif
+  // ownership of out_buf is transferred, no unref
+
 }
 
 static GstFlowReturn gst_gl_base_audio_visualizer_fill(
@@ -716,6 +903,15 @@ static void gst_gl_base_audio_visualizer_start(GstGLBaseAudioVisualizer *glav) {
 
 static void gst_gl_base_audio_visualizer_stop(GstGLBaseAudioVisualizer *glav) {
   g_rec_mutex_lock(&glav->priv->context_lock);
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  if (glav->priv->dmabuf_allocator) {
+    gst_object_unref(glav->priv->dmabuf_allocator);
+    glav->priv->dmabuf_allocator = NULL;
+  }
+  glav->priv->output_dmabuf = FALSE;
+  glav->priv->dmabuf_qdata_quark = 0;
+#endif
 
   if (glav->context) {
     if (glav->priv->gl_started)
@@ -884,6 +1080,27 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
 
   gst_query_parse_allocation(query, &caps, NULL);
 
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+
+  glav->priv->output_dmabuf =
+      _caps_has_feature(caps, GST_CAPS_FEATURE_MEMORY_DMABUF);
+
+  if (glav->priv->output_dmabuf) {
+
+    if (gst_gl_context_get_gl_platform(context) != GST_GL_PLATFORM_EGL) {
+      GST_ERROR_OBJECT(
+          glav, "DMABuf output requested but the GL platform is not EGL");
+      gst_object_unref(context);
+      return FALSE;
+    }
+
+    if (glav->priv->dmabuf_allocator == NULL) {
+      glav->priv->dmabuf_allocator = gst_dmabuf_allocator_new();
+    }
+  }
+
+#endif
+
   if (gst_query_get_n_allocation_pools(query) > 0) {
     gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min, &max);
 
@@ -913,7 +1130,20 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
   if (min < 2) {
     min = 2;
   }
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  GstCaps *pool_caps = caps;
+  if (glav->priv->output_dmabuf) {
+    pool_caps = _copy_caps_with_gl_memory(caps);
+  }
+
+  gst_buffer_pool_config_set_params(config, pool_caps, size, min, max);
+
+  if (pool_caps != caps) {
+    gst_caps_unref(pool_caps);
+  }
+#else
   gst_buffer_pool_config_set_params(config, caps, size, min, max);
+#endif
   gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
   if (gst_query_find_allocation_meta(query, GST_GL_SYNC_META_API_TYPE, NULL))
     gst_buffer_pool_config_add_option(config,

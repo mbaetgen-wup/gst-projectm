@@ -7,6 +7,12 @@
 
 #include "gstprojectm.h"
 
+#include <gst/gl/gl.h>
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+#include <gst/allocators/gstdmabuf.h>
+#endif
+
 #include <gst/audio/audio-format.h>
 #include <gst/video/video-format.h>
 
@@ -24,5 +30,12 @@ const gchar *get_audio_sink_cap() {
 }
 
 const gchar *get_video_src_cap() {
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  return GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
+      "memory:GLMemory",
+      "RGBA") "; " GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_DMABUF,
+                                                     "RGBA");
+#else
   return GST_VIDEO_CAPS_MAKE_WITH_FEATURES("memory:GLMemory", "RGBA");
+#endif
 }

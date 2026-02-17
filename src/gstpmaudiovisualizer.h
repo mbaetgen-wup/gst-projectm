@@ -169,8 +169,7 @@ gst_pm_audio_visualizer_util_prepare_output_buffer(GstPMAudioVisualizer *scope,
 void gst_pm_audio_visualizer_adjust_fps(GstPMAudioVisualizer *scope,
                                         guint64 frame_duration);
 
-void
-gst_pm_audio_visualizer_dispose_buffer_pool(GstPMAudioVisualizer *scope);
+void gst_pm_audio_visualizer_dispose_buffer_pool(GstPMAudioVisualizer *scope);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(GstPMAudioVisualizer, gst_object_unref)
 

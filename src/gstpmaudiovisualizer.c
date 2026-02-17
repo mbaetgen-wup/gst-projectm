@@ -1246,6 +1246,6 @@ void gst_pm_audio_visualizer_adjust_fps(GstPMAudioVisualizer *scope,
   }
 }
 
-void gst_pm_audio_visualizer_dispose_buffer_pool(GstPMAudioVisualizer* scope) {
+void gst_pm_audio_visualizer_dispose_buffer_pool(GstPMAudioVisualizer *scope) {
   gst_pm_audio_visualizer_set_allocation(scope, NULL, NULL, NULL, NULL);
 }
