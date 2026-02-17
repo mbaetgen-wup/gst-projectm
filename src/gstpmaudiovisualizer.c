@@ -63,6 +63,7 @@
  *  - render (once for each frame)
  */
 
+#include <gst/allocators/gstdmabuf.h>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -76,6 +77,55 @@
 
 GST_DEBUG_CATEGORY_STATIC(pm_audio_visualizer_debug);
 #define GST_CAT_DEFAULT (pm_audio_visualizer_debug)
+
+
+static GstCaps *_copy_caps_for_internal_gl_render(GstCaps *caps) {
+  GstCaps *copy;
+  GstStructure *s;
+
+  if (caps == NULL)
+    return NULL;
+
+  copy = gst_caps_copy(caps);
+  copy = gst_caps_make_writable(copy);
+
+  /* Internally we always render into an RGBA GL texture. When the negotiated
+   * output caps are DMA_DRM+DMABuf, we still keep the internal video info as
+   * RGBA to allow GstVideoFrame mapping with GST_MAP_GL. */
+  s = gst_caps_get_structure(copy, 0);
+  if (s) {
+    const gchar *fmt = gst_structure_get_string(s, "format");
+    if (fmt && g_strcmp0(fmt, "DMA_DRM") == 0) {
+      gst_structure_set(s, "format", G_TYPE_STRING, "RGBA", NULL);
+      gst_structure_remove_field(s, "drm-format");
+      gst_structure_remove_field(s, "modifier");
+    }
+  }
+
+  return copy;
+}
+
+static GstCaps *_pick_best_src_caps(GstCaps *caps) {
+  guint i, n;
+
+  if (caps == NULL)
+    return NULL;
+
+  n = gst_caps_get_size(caps);
+
+  /* Prefer DMABuf output if available. This ensures we don't always truncate to
+   * the first (often GLMemory) structure when the downstream can handle DMABuf.
+   */
+  for (i = 0; i < n; i++) {
+    const GstCapsFeatures *features = gst_caps_get_features(caps, i);
+    if (features && gst_caps_features_contains(features,
+                                               GST_CAPS_FEATURE_MEMORY_DMABUF)) {
+      return gst_caps_copy_nth(caps, i);
+    }
+  }
+
+  return gst_caps_copy_nth(caps, 0);
+}
 
 /**
  * Ignore QoS events during the first couple of frames that can cause a start
@@ -505,12 +555,18 @@ not_negotiated: {
 }
 }
 
+
 static gboolean gst_pm_audio_visualizer_src_setcaps(GstPMAudioVisualizer *scope,
                                                     GstCaps *caps) {
   GstVideoInfo info;
   gboolean res;
+  GstCaps *internal_caps = NULL;
 
-  if (!gst_video_info_from_caps(&info, caps))
+  internal_caps = _copy_caps_for_internal_gl_render(caps);
+  if (internal_caps == NULL)
+    goto wrong_caps;
+
+  if (!gst_video_info_from_caps(&info, internal_caps))
     goto wrong_caps;
 
   g_mutex_lock(&scope->priv->config_lock);
@@ -522,6 +578,10 @@ static gboolean gst_pm_audio_visualizer_src_setcaps(GstPMAudioVisualizer *scope,
 
   scope->req_frame_duration = scope->priv->caps_frame_duration;
   g_mutex_unlock(&scope->priv->config_lock);
+
+  if (internal_caps)
+    gst_caps_unref(internal_caps);
+  internal_caps = NULL;
 
   gst_pad_set_caps(scope->srcpad, caps);
 
@@ -538,6 +598,9 @@ static gboolean gst_pm_audio_visualizer_src_setcaps(GstPMAudioVisualizer *scope,
 
   /* ERRORS */
 wrong_caps: {
+  if (internal_caps)
+    gst_caps_unref(internal_caps);
+  internal_caps = NULL;
   gst_caps_unref(caps);
   GST_DEBUG_OBJECT(scope, "error parsing caps");
   return FALSE;
@@ -570,13 +633,22 @@ gst_pm_audio_visualizer_src_negotiate(GstPMAudioVisualizer *scope) {
     if (gst_caps_is_empty(target))
       goto no_format;
 
-    target = gst_caps_truncate(target);
+    /* Pick a preferred structure before truncating (prefer DMABuf). */
+  {
+    GstCaps *picked = _pick_best_src_caps(target);
+    gst_caps_unref(target);
+    target = picked;
+  }
   } else {
     target = templ;
   }
 
   target = gst_caps_make_writable(target);
   structure = gst_caps_get_structure(target, 0);
+
+  if (gst_structure_has_field(structure, "drm-format")) {
+    gst_structure_fixate_field_string(structure, "drm-format", "XR24");
+  }
   gst_structure_fixate_field_nearest_int(structure, "width", 320);
   gst_structure_fixate_field_nearest_int(structure, "height", 200);
   gst_structure_fixate_field_nearest_fraction(structure, "framerate", 25, 1);

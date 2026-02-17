@@ -43,10 +43,30 @@ static gboolean bd_buffer_needs_gl_dispose(GstBuffer *buffer) {
   if (gst_buffer_get_gl_sync_meta(buffer) != NULL)
     return TRUE;
 
+  gboolean is_gl = FALSE;
+
   if (gst_buffer_n_memory(buffer) > 0) {
     GstMemory *mem = gst_buffer_peek_memory(buffer, 0);
     if (mem && gst_is_gl_memory(mem))
       return TRUE;
+  }
+
+  /* DMABuf-exported buffers can carry ParentBufferMeta that keeps the original
+ * GL buffer alive. Ensure such buffers are disposed on the GL thread too,
+ * otherwise parent GL resources may be released from the wrong thread. */
+  if (!is_gl) {
+    gpointer state = NULL;
+    GstMeta *meta = NULL;
+
+    while ((meta = gst_buffer_iterate_meta (buffer, &state))) {
+      if (meta->info->api == GST_PARENT_BUFFER_META_API_TYPE) {
+        GstParentBufferMeta *pmeta = (GstParentBufferMeta *) meta;
+        if (pmeta->buffer && bd_buffer_needs_gl_dispose (pmeta->buffer)) {
+          is_gl = TRUE;
+          break;
+        }
+      }
+    }
   }
 
   return FALSE;

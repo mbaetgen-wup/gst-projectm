@@ -1,4 +1,3 @@
-
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -31,11 +30,13 @@ const gchar *get_audio_sink_cap() {
 
 const gchar *get_video_src_cap() {
 #if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
-  return GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
-      "memory:GLMemory",
-      "RGBA") "; " GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_DMABUF,
-                                                     "RGBA");
+  /* Expose both GLMemory and DMABuf (DMA_DRM) output. */
+  return GST_VIDEO_CAPS_MAKE_WITH_FEATURES("memory:GLMemory", "RGBA") "; "
+         GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_DMABUF, "DMA_DRM")
+         ", drm-format = (string) { XR24, AR24, NV12 }";
 #else
   return GST_VIDEO_CAPS_MAKE_WITH_FEATURES("memory:GLMemory", "RGBA");
 #endif
 }
+
+
