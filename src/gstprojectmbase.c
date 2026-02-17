@@ -123,13 +123,19 @@ static void gst_projectm_base_handle_preset_change(bool is_hard_cut,
  *
  * @return Function pointer lookup result.
  */
-static void* gst_projectm_base_get_proc_address(const char *name, void* user_data) {
-  if (!name) return NULL;
-  GstGLContext *ctx = (GstGLContext*) user_data;
+static void *gst_projectm_base_get_proc_address(const char *name,
+                                                void *user_data) {
+  if (!name) {
+    return NULL;
+  }
+
+  GstGLContext *ctx = (GstGLContext *)user_data;
   if (ctx) {
-    gpointer p = gst_gl_context_get_proc_address (ctx, name);
+    gpointer p = gst_gl_context_get_proc_address(ctx, name);
     GST_DEBUG("Loaded %s, result %p", name, (void *)p);
-    if (p) return (void*)p;
+    if (p) {
+      return (void *)p;
+    }
   }
   return NULL;
 }
@@ -146,7 +152,8 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(plugin);
   // Create ProjectM instance
   GST_DEBUG_OBJECT(plugin, "Creating projectM instance..");
-  result.ret_handle = projectm_create_with_opengl_load_proc(gst_projectm_base_get_proc_address, glav->context);
+  result.ret_handle = projectm_create_with_opengl_load_proc(
+      gst_projectm_base_get_proc_address, glav->context);
 
   if (!result.ret_handle) {
     GST_DEBUG_OBJECT(
@@ -431,26 +438,26 @@ void gst_projectm_base_get_property(GObject *object,
  * @param severity projectM severity.
  * @param userData Plugin pointer.
  */
-static void gst_projectm_base_log_message(const char* message, projectm_log_level severity, void* userData)
-{
-    switch (severity)
-    {
-    case PROJECTM_LOG_LEVEL_FATAL:
-    case PROJECTM_LOG_LEVEL_ERROR:
-        GST_ERROR(message);
-        break;
-    case PROJECTM_LOG_LEVEL_WARN:
-        GST_WARNING(message);
-        break;
-    case PROJECTM_LOG_LEVEL_TRACE:
-    case PROJECTM_LOG_LEVEL_DEBUG:
-        GST_DEBUG(message);
-        break;
-    case PROJECTM_LOG_LEVEL_NOTSET:
-    case PROJECTM_LOG_LEVEL_INFO:
-        GST_INFO(message);
-        break;
-    }
+static void gst_projectm_base_log_message(const char *message,
+                                          projectm_log_level severity,
+                                          void *userData) {
+  switch (severity) {
+  case PROJECTM_LOG_LEVEL_FATAL:
+  case PROJECTM_LOG_LEVEL_ERROR:
+    GST_ERROR(message);
+    break;
+  case PROJECTM_LOG_LEVEL_WARN:
+    GST_WARNING(message);
+    break;
+  case PROJECTM_LOG_LEVEL_TRACE:
+  case PROJECTM_LOG_LEVEL_DEBUG:
+    GST_DEBUG(message);
+    break;
+  case PROJECTM_LOG_LEVEL_NOTSET:
+  case PROJECTM_LOG_LEVEL_INFO:
+    GST_INFO(message);
+    break;
+  }
 }
 
 /**
@@ -460,47 +467,47 @@ static void gst_projectm_base_log_message(const char* message, projectm_log_leve
  * @return ProjectM log level.
  */
 static projectm_log_level
-gst_projectm_base_level_from_gst_debug_level (GstDebugLevel lvl)
-{
-    switch (lvl) {
-        case GST_LEVEL_ERROR:
-            return PROJECTM_LOG_LEVEL_ERROR;
+gst_projectm_base_level_from_gst_debug_level(GstDebugLevel lvl) {
+  switch (lvl) {
+  case GST_LEVEL_ERROR:
+    return PROJECTM_LOG_LEVEL_ERROR;
 
-        case GST_LEVEL_WARNING:
-            return PROJECTM_LOG_LEVEL_WARN;
+  case GST_LEVEL_WARNING:
+    return PROJECTM_LOG_LEVEL_WARN;
 
-        case GST_LEVEL_FIXME:
-            return PROJECTM_LOG_LEVEL_WARN;
+  case GST_LEVEL_FIXME:
+    return PROJECTM_LOG_LEVEL_WARN;
 
-        case GST_LEVEL_INFO:
-            return PROJECTM_LOG_LEVEL_INFO;
+  case GST_LEVEL_INFO:
+    return PROJECTM_LOG_LEVEL_INFO;
 
-        case GST_LEVEL_DEBUG:
-        case GST_LEVEL_LOG:
-            return PROJECTM_LOG_LEVEL_DEBUG;
+  case GST_LEVEL_DEBUG:
+  case GST_LEVEL_LOG:
+    return PROJECTM_LOG_LEVEL_DEBUG;
 
-        case GST_LEVEL_TRACE:
-        case GST_LEVEL_MEMDUMP:
-            return PROJECTM_LOG_LEVEL_TRACE;
+  case GST_LEVEL_TRACE:
+  case GST_LEVEL_MEMDUMP:
+    return PROJECTM_LOG_LEVEL_TRACE;
 
-        case GST_LEVEL_NONE:
-        default:
-            return PROJECTM_LOG_LEVEL_NOTSET;
-    }
+  case GST_LEVEL_NONE:
+  default:
+    return PROJECTM_LOG_LEVEL_NOTSET;
+  }
 }
 
 /**
- * Get log level for projectM base category with fall back to global default threshold.
+ * Get log level for projectM base category with fall back to global default
+ * threshold.
  */
-static projectm_log_level gst_projectm_base_get_log_level()
-{
-    GstDebugLevel gst_lvl = gst_debug_category_get_threshold (gst_projectm_base_debug);
+static projectm_log_level gst_projectm_base_get_log_level() {
+  GstDebugLevel gst_lvl =
+      gst_debug_category_get_threshold(gst_projectm_base_debug);
 
   if (gst_lvl == GST_LEVEL_NONE) {
-        gst_lvl = gst_debug_get_default_threshold ();
-    }
+    gst_lvl = gst_debug_get_default_threshold();
+  }
 
-    return gst_projectm_base_level_from_gst_debug_level (gst_lvl);
+  return gst_projectm_base_level_from_gst_debug_level(gst_lvl);
 }
 
 void gst_projectm_base_init(GstBaseProjectMSettings *settings,
@@ -514,7 +521,10 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
     // configure projectM logging
     projectm_log_level log_level = gst_projectm_base_get_log_level();
 
-    projectm_set_log_level(log_level == PROJECTM_LOG_LEVEL_NOTSET ? PROJECTM_LOG_LEVEL_INFO : log_level, false);
+    projectm_set_log_level(log_level == PROJECTM_LOG_LEVEL_NOTSET
+                               ? PROJECTM_LOG_LEVEL_INFO
+                               : log_level,
+                           false);
     projectm_set_log_callback(&gst_projectm_base_log_message, false, NULL);
   }
 
