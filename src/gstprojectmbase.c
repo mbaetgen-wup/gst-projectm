@@ -115,6 +115,30 @@ static void gst_projectm_base_handle_preset_change(bool is_hard_cut,
   }
 }
 
+static void* gst_projectm_base_load_proc(const char* name, void* user_data) {
+  return gst_gl_context_get_proc_address((GstGLContext*)user_data, name);
+}
+
+static void gst_projectm_base_log(const char* message, projectm_log_level log_level, void* user_data) {
+  switch (log_level) {
+    case PROJECTM_LOG_LEVEL_TRACE:
+    case PROJECTM_LOG_LEVEL_DEBUG:
+      GST_DEBUG_OBJECT((GObject*)user_data, message);
+      break;
+    case PROJECTM_LOG_LEVEL_INFO:
+    case PROJECTM_LOG_LEVEL_NOTSET:
+      GST_INFO_OBJECT((GObject*)user_data, message);
+      break;
+    case PROJECTM_LOG_LEVEL_WARN:
+      GST_WARNING_OBJECT((GObject*)user_data, message);
+      break;
+    case PROJECTM_LOG_LEVEL_ERROR:
+    case PROJECTM_LOG_LEVEL_FATAL:
+      GST_ERROR_OBJECT((GObject*)user_data, message);
+      break;
+  }
+}
+
 /**
  * Lookup GL function pointer through gst-gl.
  *
@@ -142,18 +166,18 @@ static void *gst_projectm_base_get_proc_address(const char *name,
 
 static GstBaseProjectMInitResult
 projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
-              GstVideoInfo *vinfo) {
+              GstVideoInfo *vinfo, GstGLContext* context) {
 
   GstBaseProjectMInitResult result;
   result.ret_handle = NULL;
   result.ret_playlist = NULL;
   result.success = FALSE;
 
-  GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(plugin);
+  projectm_set_log_level(PROJECTM_LOG_LEVEL_DEBUG, false);
+  projectm_set_log_callback(&gst_projectm_base_log, false, plugin);
   // Create ProjectM instance
   GST_DEBUG_OBJECT(plugin, "Creating projectM instance..");
-  result.ret_handle = projectm_create_with_opengl_load_proc(
-      gst_projectm_base_get_proc_address, glav->context);
+  result.ret_handle = projectm_create_with_opengl_load_proc(&gst_projectm_base_load_proc, context);
 
   if (!result.ret_handle) {
     GST_DEBUG_OBJECT(
@@ -596,7 +620,7 @@ gboolean gst_projectm_base_gl_start(GObject *plugin,
   if (!priv->handle) {
     // Create ProjectM instance
     priv->first_frame_received = FALSE;
-    GstBaseProjectMInitResult result = projectm_init(plugin, settings, vinfo);
+    GstBaseProjectMInitResult result = projectm_init(plugin, settings, vinfo, context);
     if (!result.success) {
       GST_ERROR_OBJECT(plugin, "projectM could not be initialized");
       return FALSE;
