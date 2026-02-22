@@ -14,7 +14,50 @@ find_package(projectM4 4.1.0 REQUIRED Playlist)
 find_package(GStreamer REQUIRED COMPONENTS gstreamer-audio gstreamer-gl gstreamer-pbutils gstreamer-video)
 find_package(GLIB2 REQUIRED)
 
-add_library(gstprojectm MODULE
+# ---- Conditional DMABuf support detection ----
+# DMABuf requires: gbm, egl, drm, gstallocators, gstgl (with EGL)
+include(FindPkgConfig)
+
+set(HAVE_DMABUF FALSE)
+if(UNIX AND NOT APPLE)
+    pkg_check_modules(GBM gbm)
+    pkg_check_modules(EGL egl)
+    pkg_check_modules(DRM libdrm)
+    pkg_check_modules(GST_ALLOCATORS gstreamer-allocators-1.0)
+    pkg_check_modules(GST_GL_EGL gstreamer-gl-egl-1.0)
+
+    if(GBM_FOUND AND EGL_FOUND AND DRM_FOUND AND GST_ALLOCATORS_FOUND AND GST_GL_EGL_FOUND)
+        set(HAVE_DMABUF TRUE)
+        message(STATUS "DMABuf support: ENABLED")
+        message(STATUS "  GBM: ${GBM_LIBRARIES}")
+        message(STATUS "  EGL: ${EGL_LIBRARIES}")
+        message(STATUS "  DRM: ${DRM_LIBRARIES}")
+        message(STATUS "  GST Allocators: ${GST_ALLOCATORS_LIBRARIES}")
+        message(STATUS "  GST GL EGL: ${GST_GL_EGL_LIBRARIES}")
+    else()
+        message(STATUS "DMABuf support: DISABLED (missing dependencies)")
+        if(NOT GBM_FOUND)
+            message(STATUS "  Missing: gbm")
+        endif()
+        if(NOT EGL_FOUND)
+            message(STATUS "  Missing: egl")
+        endif()
+        if(NOT DRM_FOUND)
+            message(STATUS "  Missing: libdrm")
+        endif()
+        if(NOT GST_ALLOCATORS_FOUND)
+            message(STATUS "  Missing: gstreamer-allocators-1.0")
+        endif()
+        if(NOT GST_GL_EGL_FOUND)
+            message(STATUS "  Missing: gstreamer-gl-egl-1.0")
+        endif()
+    endif()
+else()
+    message(STATUS "DMABuf support: DISABLED (Linux only)")
+endif()
+
+# ---- Core source files ----
+set(GSTPROJECTM_SOURCES
     src/bufferdisposal.h
     src/bufferdisposal.c
     src/debug.h
@@ -37,6 +80,20 @@ add_library(gstprojectm MODULE
     src/renderbuffer.c
 )
 
+# ---- Add DMABuf source files conditionally ----
+if(HAVE_DMABUF)
+    list(APPEND GSTPROJECTM_SOURCES
+        src/gstdmabufpool.h
+        src/gstdmabufpool.c
+        src/gstdmabufegl.h
+        src/gstdmabufegl.c
+        src/gstnv12shader.h
+        src/gstnv12shader.c
+    )
+endif()
+
+add_library(gstprojectm MODULE ${GSTPROJECTM_SOURCES})
+
 target_include_directories(gstprojectm
     PUBLIC
         ${GSTREAMER_INCLUDE_DIRS}
@@ -46,6 +103,19 @@ target_include_directories(gstprojectm
         ${GLIB2_INCLUDE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+# ---- DMABuf compile definitions and include dirs ----
+if(HAVE_DMABUF)
+    target_compile_definitions(gstprojectm PRIVATE HAVE_DMABUF=1)
+    target_include_directories(gstprojectm
+        PRIVATE
+            ${GBM_INCLUDE_DIRS}
+            ${EGL_INCLUDE_DIRS}
+            ${DRM_INCLUDE_DIRS}
+            ${GST_ALLOCATORS_INCLUDE_DIRS}
+            ${GST_GL_EGL_INCLUDE_DIRS}
+    )
+endif()
 
 message(STATUS "GSTREAMER_INCLUDE_DIRS: ${GSTREAMER_INCLUDE_DIRS}")
 message(STATUS "GSTREAMER_LIBRARIES: ${GSTREAMER_LIBRARIES}")
@@ -81,3 +151,15 @@ target_link_libraries(gstprojectm
         ${GLIB2_LIBRARIES}
         ${GLIB2_GOBJECT_LIBRARIES}
 )
+
+# ---- DMABuf link libraries ----
+if(HAVE_DMABUF)
+    target_link_libraries(gstprojectm
+        PRIVATE
+            ${GBM_LIBRARIES}
+            ${EGL_LIBRARIES}
+            ${DRM_LIBRARIES}
+            ${GST_ALLOCATORS_LIBRARIES}
+            ${GST_GL_EGL_LIBRARIES}
+    )
+endif()

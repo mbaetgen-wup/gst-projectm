@@ -118,9 +118,28 @@ static gboolean gst_projectm_fill_gl_memory_callback(gpointer stuff) {
 
 static gboolean gst_projectm_fill_gl_memory(GstAVRenderParams *render_data) {
 
-  gboolean result = gst_gl_framebuffer_draw_to_texture(
-      render_data->fbo, render_data->mem, gst_projectm_fill_gl_memory_callback,
-      render_data);
+  if (render_data->mem != NULL) {
+    /* Standard GLMemory path: use gst_gl_framebuffer_draw_to_texture which
+     * binds the FBO, attaches the GLMemory texture as color attachment,
+     * calls the callback, then unbinds. */
+    return gst_gl_framebuffer_draw_to_texture(
+        render_data->fbo, render_data->mem,
+        gst_projectm_fill_gl_memory_callback, render_data);
+  }
+
+  /* DMABuf path: mem is NULL because the output target is a DMABuf, not
+   * GLMemory.  We cannot use gst_gl_framebuffer_draw_to_texture (it asserts
+   * gst_is_gl_memory).  Instead, bind the FBO directly and call the render
+   * callback — the FBO already has its color attachment configured by the
+   * NV12 shader converter or RGBA DMABuf import path. */
+  GstGLBaseAudioVisualizer *glav =
+      GST_GL_BASE_AUDIO_VISUALIZER(render_data->plugin);
+
+  gst_gl_framebuffer_bind(render_data->fbo);
+
+  gboolean result = gst_projectm_fill_gl_memory_callback(render_data);
+
+  gst_gl_context_clear_framebuffer(glav->context);
 
   return result;
 }

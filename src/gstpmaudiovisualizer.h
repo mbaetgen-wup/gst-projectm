@@ -147,6 +147,12 @@ struct _GstPMAudioVisualizerClass {
    */
   void (*segment_change)(GstPMAudioVisualizer *scope, GstSegment *segment);
 
+  /**
+   * Optional: filter src caps before negotiation.
+   * Subclasses remove unsupported formats (e.g. DMABuf NV12).
+   */
+  GstCaps *(*filter_src_caps)(GstPMAudioVisualizer *scope, GstCaps *templ);
+
   /*< private >*/
   gpointer _padding[GST_PADDING];
 };

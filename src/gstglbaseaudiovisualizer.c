@@ -42,6 +42,20 @@
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
 
+#ifdef HAVE_DMABUF
+#include "gstdmabufpool.h"
+#include "gstdmabufegl.h"
+#include "gstnv12shader.h"
+
+#include <gst/allocators/gstdmabuf.h>
+#include <gbm.h>
+#include <xf86drm.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <drm_fourcc.h>
+#include <string.h>
+#endif
+
 #ifdef _WIN32
 #define strcasecmp _stricmp
 #endif
@@ -109,6 +123,27 @@ struct _GstGLBaseAudioVisualizerPrivate {
   GstGLFramebuffer *fbo;
   RBRenderBuffer render_buffer;
   gboolean is_realtime;
+
+#ifdef HAVE_DMABUF
+  /* DMABuf output mode state */
+  GstDmaBufOutputMode dmabuf_mode;
+
+  /* GBM device for DMABuf allocation */
+  struct gbm_device *gbm_device;
+  gint drm_fd;
+
+  /* DMABuf buffer pool */
+  GstDmaBufPool *dmabuf_pool;
+  gboolean use_downstream_pool;
+
+  /* NV12 shader converter (for NV12 mode) */
+  GstNV12ShaderConverter nv12_converter;
+  gboolean nv12_converter_initialized;
+
+  /* DRM modifier from GBM allocation */
+  guint64 drm_modifier;
+  gboolean drm_modifier_valid;
+#endif
 };
 
 /* Properties */
@@ -301,6 +336,16 @@ static void gst_gl_base_audio_visualizer_init(GstGLBaseAudioVisualizer *glav) {
   glav->min_fps_d = DEFAULT_MIN_FPS_D;
 
   g_rec_mutex_init(&glav->priv->context_lock);
+
+#ifdef HAVE_DMABUF
+  glav->priv->dmabuf_mode = GST_DMABUF_MODE_GLMEMORY_RGBA;
+  glav->priv->gbm_device = NULL;
+  glav->priv->drm_fd = -1;
+  glav->priv->dmabuf_pool = NULL;
+  glav->priv->nv12_converter_initialized = FALSE;
+  glav->priv->drm_modifier = 0;
+  glav->priv->drm_modifier_valid = FALSE;
+#endif
 
   gst_gl_base_audio_visualizer_start(glav);
 }
@@ -510,6 +555,14 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
   // clean up render buffer
   rb_dispose_render_buffer(&glav->priv->render_buffer);
 
+#ifdef HAVE_DMABUF
+  // clean up DMABuf resources (NV12 converter must be freed on GL thread)
+  if (glav->priv->nv12_converter_initialized) {
+    gst_nv12_shader_dispose(&glav->priv->nv12_converter);
+    glav->priv->nv12_converter_initialized = FALSE;
+  }
+#endif
+
   // clean up state
   if (glav->priv->fbo) {
     gst_object_unref(glav->priv->fbo);
@@ -517,6 +570,73 @@ static void gst_gl_base_audio_visualizer_gl_stop(GstGLContext *context,
 
   gst_pm_audio_visualizer_dispose_buffer_pool(GST_PM_AUDIO_VISUALIZER(data));
 }
+
+
+#ifdef HAVE_DMABUF
+
+/**
+ * Open a DRM render node and create a GBM device.
+ * Called once during allocation setup.
+ *
+ * @param glav The plugin instance.
+ * @return TRUE on success.
+ */
+static gboolean
+gst_gl_base_audio_visualizer_init_gbm(GstGLBaseAudioVisualizer *glav) {
+  if (glav->priv->gbm_device)
+    return TRUE;
+
+  /* Try common render nodes */
+  const gchar *render_nodes[] = {
+    "/dev/dri/renderD128",
+    "/dev/dri/renderD129",
+    NULL
+  };
+
+  for (gint i = 0; render_nodes[i]; i++) {
+    glav->priv->drm_fd = open(render_nodes[i], O_RDWR | O_CLOEXEC);
+    if (glav->priv->drm_fd >= 0) {
+      glav->priv->gbm_device = gbm_create_device(glav->priv->drm_fd);
+      if (glav->priv->gbm_device) {
+        GST_INFO_OBJECT(glav, "GBM device created from %s", render_nodes[i]);
+        return TRUE;
+      }
+      close(glav->priv->drm_fd);
+      glav->priv->drm_fd = -1;
+    }
+  }
+
+  GST_WARNING_OBJECT(glav, "Failed to create GBM device from any render node");
+  return FALSE;
+}
+
+/**
+ * Release GBM device and DRM fd.
+ */
+static void
+gst_gl_base_audio_visualizer_cleanup_gbm(GstGLBaseAudioVisualizer *glav) {
+  if (glav->priv->dmabuf_pool) {
+    gst_buffer_pool_set_active(GST_BUFFER_POOL(glav->priv->dmabuf_pool), FALSE);
+    gst_object_unref(glav->priv->dmabuf_pool);
+    glav->priv->dmabuf_pool = NULL;
+  }
+
+  if (glav->priv->nv12_converter_initialized) {
+    gst_nv12_shader_dispose(&glav->priv->nv12_converter);
+    glav->priv->nv12_converter_initialized = FALSE;
+  }
+
+  if (glav->priv->gbm_device) {
+    gbm_device_destroy(glav->priv->gbm_device);
+    glav->priv->gbm_device = NULL;
+  }
+
+  if (glav->priv->drm_fd >= 0) {
+    close(glav->priv->drm_fd);
+    glav->priv->drm_fd = -1;
+  }
+}
+
 
 static gboolean gst_gl_base_audio_visualizer_default_fill_gl_memory(
     GstAVRenderParams *render_data) {
@@ -539,11 +659,295 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
 
   GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(render_slot->plugin);
 
-  GstBuffer *out_buf;
+  GstBuffer *out_buf = NULL;
   GstVideoFrame out_video;
+
+#ifdef HAVE_DMABUF
+  if (glav->priv->dmabuf_mode == GST_DMABUF_MODE_DMABUF_RGBA ||
+      glav->priv->dmabuf_mode == GST_DMABUF_MODE_DMABUF_NV12) {
+
+    /* DMABuf rendering path - acquire from DMABuf pool */
+    {
+      GstFlowReturn flow_ret =
+          gst_pm_audio_visualizer_util_prepare_output_buffer(pmav, &out_buf);
+      if (flow_ret != GST_FLOW_OK || out_buf == NULL) {
+        GST_ERROR_OBJECT(glav,
+            "DMABuf pool buffer acquisition failed (flow=%d, buf=%p)",
+            flow_ret, out_buf);
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = NULL;
+        return;
+      }
+    }
+
+    if (glav->priv->dmabuf_mode == GST_DMABUF_MODE_DMABUF_RGBA) {
+      /*
+       * MODE_DMABUF_RGBA:
+       * Import DMABuf → EGLImage → GL texture, bind to FBO, render.
+       */
+      if (gst_buffer_n_memory(out_buf) < 1) {
+        GST_ERROR_OBJECT(glav, "RGBA DMABuf buffer has no memory planes");
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = out_buf;
+        return;
+      }
+      GstMemory *mem = gst_buffer_peek_memory(out_buf, 0);
+      gint fd = gst_dmabuf_memory_get_fd(mem);
+      GstVideoMeta *vmeta = gst_buffer_get_video_meta(out_buf);
+      guint width = vmeta ? vmeta->width : GST_VIDEO_INFO_WIDTH(&pmav->vinfo);
+      guint height = vmeta ? vmeta->height : GST_VIDEO_INFO_HEIGHT(&pmav->vinfo);
+      guint stride = vmeta ? vmeta->stride[0] : width * 4;
+
+      GstDmaBufEGLImage egl_img;
+      if (!gst_dmabuf_egl_import(&egl_img, glav->context, fd,
+                                  width, height, stride, 0,
+                                  DRM_FORMAT_ARGB8888,
+                                  glav->priv->drm_modifier)) {
+        GST_ERROR_OBJECT(glav, "Failed to import RGBA DMABuf as EGLImage");
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = out_buf;
+        return;
+      }
+
+      /* Bind EGLImage texture to FBO and render into it */
+      const GstGLFuncs *gl = glav->context->gl_vtable;
+      guint fbo_id;
+      gl->GenFramebuffers(1, &fbo_id);
+      gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_id);
+      gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, egl_img.gl_tex, 0);
+
+      gl->Viewport(0, 0, width, height);
+
+      GstAVRenderParams ds_rd;
+      ds_rd.in_audio = render_slot->in_audio;
+      ds_rd.mem = NULL; /* no GLMemory in DMABuf mode */
+      ds_rd.fbo = glav->priv->fbo;
+      ds_rd.pts = render_slot->pts;
+      ds_rd.plugin = glav;
+
+      render_slot->gl_result = klass->fill_gl_memory(&ds_rd);
+
+      gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
+      gl->DeleteFramebuffers(1, &fbo_id);
+
+      gst_dmabuf_egl_release(&egl_img, glav->context);
+
+    } else { /* GST_DMABUF_MODE_DMABUF_NV12 */
+      /*
+       * MODE_DMABUF_NV12 — zero-copy VA-API path:
+       *
+       *   VA allocates tiled NV12 DMABuf
+       *           ↓
+       *   Import planes as R8 + GR88 EGLImages
+       *           ↓
+       *   Render visualizer → intermediate RGBA FBO
+       *           ↓
+       *   Shader convert RGBA → Y plane (R8, full res)
+       *           ↓
+       *   Shader convert RGBA → UV plane (GR88, half res)
+       *           ↓
+       *   Add GL sync meta
+       *           ↓
+       *   Push buffer → vah264enc uses same memory
+       *
+       * NV12 is NOT color-renderable, so we cannot FBO-attach it directly.
+       * Instead we import each plane separately:
+       *   Plane 0 (Y)  → DRM_FORMAT_R8  → color-renderable ✔
+       *   Plane 1 (UV) → DRM_FORMAT_GR88 → color-renderable ✔
+       */
+      guint width = GST_VIDEO_INFO_WIDTH(&pmav->vinfo);
+      guint height = GST_VIDEO_INFO_HEIGHT(&pmav->vinfo);
+
+      /* Initialize NV12 converter on first use (GL thread) */
+      if (!glav->priv->nv12_converter_initialized) {
+        if (!gst_nv12_shader_init(&glav->priv->nv12_converter,
+                                   glav->context, width, height)) {
+          GST_ERROR_OBJECT(glav, "Failed to init NV12 shader converter");
+          render_slot->gl_result = FALSE;
+          render_slot->out_buf = out_buf;
+          return;
+        }
+        glav->priv->nv12_converter_initialized = TRUE;
+      }
+
+      /* Step 1: Render scene to intermediate RGBA FBO */
+      GstAVRenderParams ds_rd;
+      ds_rd.in_audio = render_slot->in_audio;
+      ds_rd.mem = NULL;
+      ds_rd.fbo = gst_nv12_shader_get_rgba_fbo(&glav->priv->nv12_converter);
+      ds_rd.pts = render_slot->pts;
+      ds_rd.plugin = glav;
+
+      render_slot->gl_result = klass->fill_gl_memory(&ds_rd);
+
+      if (!render_slot->gl_result) {
+        GST_WARNING_OBJECT(glav, "Scene render to intermediate RGBA failed");
+        render_slot->out_buf = out_buf;
+        return;
+      }
+
+      /* Step 2: Extract DMABuf fd(s) and plane geometry.
+       *
+       * Buffer layouts:
+       *   VA-API (single-fd):  n_mem == 1, planes at different offsets
+       *   GBM    (multi-fd):   n_mem >= 2, separate fd per plane
+       */
+      guint n_mem = gst_buffer_n_memory(out_buf);
+      GstVideoMeta *vmeta = gst_buffer_get_video_meta(out_buf);
+
+      gint y_fd, uv_fd;
+      guint y_stride, uv_stride, y_offset, uv_offset;
+
+      if (n_mem >= 2) {
+        /* GBM-style: separate fds per plane */
+        GstMemory *y_mem_obj = gst_buffer_peek_memory(out_buf, 0);
+        GstMemory *uv_mem_obj = gst_buffer_peek_memory(out_buf, 1);
+        y_fd = gst_dmabuf_memory_get_fd(y_mem_obj);
+        uv_fd = gst_dmabuf_memory_get_fd(uv_mem_obj);
+        y_stride = vmeta ? vmeta->stride[0] : width;
+        uv_stride = vmeta ? vmeta->stride[1] : width;
+        y_offset = vmeta ? vmeta->offset[0] : 0;
+        uv_offset = vmeta ? vmeta->offset[1] : 0;
+      } else if (n_mem == 1) {
+        /* VA-API style: single fd, planes at different offsets */
+        GstMemory *mem = gst_buffer_peek_memory(out_buf, 0);
+        if (!gst_is_dmabuf_memory(mem)) {
+          GST_ERROR_OBJECT(glav, "NV12 buffer memory is not DMABuf");
+          render_slot->gl_result = FALSE;
+          render_slot->out_buf = out_buf;
+          return;
+        }
+        y_fd = gst_dmabuf_memory_get_fd(mem);
+        uv_fd = y_fd;
+        if (vmeta && vmeta->n_planes >= 2) {
+          y_stride = vmeta->stride[0];
+          uv_stride = vmeta->stride[1];
+          y_offset = vmeta->offset[0];
+          uv_offset = vmeta->offset[1];
+        } else {
+          y_stride = width;
+          uv_stride = width;
+          y_offset = 0;
+          uv_offset = (guint)((gsize)width * height);
+          GST_WARNING_OBJECT(glav,
+              "No VideoMeta; guessing NV12 layout");
+        }
+      } else {
+        GST_ERROR_OBJECT(glav,
+            "NV12 buffer has %u memories, expected 1 or 2", n_mem);
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = out_buf;
+        return;
+      }
+
+      GST_INFO_OBJECT(glav,
+          "NV12: n_mem=%u y_fd=%d uv_fd=%d "
+          "Y(off=%u stride=%u) UV(off=%u stride=%u) "
+          "mod=0x%" G_GINT64_MODIFIER "x",
+          n_mem, y_fd, uv_fd,
+          y_offset, y_stride, uv_offset, uv_stride,
+          glav->priv->drm_modifier);
+
+      /* Step 3: Import planes separately as R8 and GR88 EGLImages.
+       *
+       * These sub-formats ARE color-renderable, so the shader can
+       * write into them via FBO attachment.  The modifier is passed
+       * so the EGL driver handles the tiled memory layout. */
+      guint uv_width = (width + 1) / 2;
+      guint uv_height = (height + 1) / 2;
+
+      GstDmaBufEGLImage y_egl;
+      if (!gst_dmabuf_egl_import(&y_egl, glav->context, y_fd,
+                                  width, height, y_stride, y_offset,
+                                  DRM_FORMAT_R8,
+                                  glav->priv->drm_modifier)) {
+        GST_ERROR_OBJECT(glav, "Y plane import failed (R8, mod=0x%"
+                         G_GINT64_MODIFIER "x)", glav->priv->drm_modifier);
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = out_buf;
+        return;
+      }
+
+      GstDmaBufEGLImage uv_egl;
+      if (!gst_dmabuf_egl_import(&uv_egl, glav->context, uv_fd,
+                                  uv_width, uv_height, uv_stride, uv_offset,
+                                  DRM_FORMAT_GR88,
+                                  glav->priv->drm_modifier)) {
+        GST_ERROR_OBJECT(glav, "UV plane import failed (GR88, mod=0x%"
+                         G_GINT64_MODIFIER "x)", glav->priv->drm_modifier);
+        gst_dmabuf_egl_release(&y_egl, glav->context);
+        render_slot->gl_result = FALSE;
+        render_slot->out_buf = out_buf;
+        return;
+      }
+
+      /* Step 4: Convert RGBA → Y + UV via shader passes.
+       * Each pass attaches the plane texture as FBO color target. */
+      guint rgba_tex = gst_nv12_shader_get_rgba_tex(
+          &glav->priv->nv12_converter);
+
+      GST_INFO_OBJECT(glav,
+          "NV12 convert: rgba_tex=%u y_tex=%u(%ux%u) uv_tex=%u(%ux%u)",
+          rgba_tex, y_egl.gl_tex, width, height,
+          uv_egl.gl_tex, uv_width, uv_height);
+
+      render_slot->gl_result = gst_nv12_shader_convert(
+          &glav->priv->nv12_converter, rgba_tex,
+          y_egl.gl_tex, uv_egl.gl_tex);
+
+      if (!render_slot->gl_result)
+        GST_ERROR_OBJECT(glav, "NV12 shader conversion failed");
+
+      gst_dmabuf_egl_release(&y_egl, glav->context);
+      gst_dmabuf_egl_release(&uv_egl, glav->context);
+
+      /* Step 5: GL sync meta — ensures VA encoder waits for GL rendering
+       * to complete before reading the surface. */
+      {
+        GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
+        if (!sync_meta) {
+          gst_buffer_add_gl_sync_meta(glav->context, out_buf);
+          sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
+        }
+        if (sync_meta)
+          gst_gl_sync_meta_set_sync_point(sync_meta, glav->context);
+      }
+    }
+
+    render_slot->out_buf = out_buf;
+    /* ownership transferred */
+    return;
+  }
+#endif /* HAVE_DMABUF */
+
+  /* =========================================================
+   * Standard GLMemory RGBA path (MODE_GLMEMORY_RGBA, unchanged)
+   * ========================================================= */
 
   // obtain output buffer from the (GL texture backed) pool
   gst_pm_audio_visualizer_util_prepare_output_buffer(pmav, &out_buf);
+
+  /* Validate that the buffer actually contains GLMemory before proceeding. */
+  if (gst_buffer_n_memory(out_buf) == 0) {
+    GST_ERROR_OBJECT(glav, "Output buffer has no memory attached");
+    render_slot->gl_result = FALSE;
+    render_slot->out_buf = out_buf;
+    return;
+  }
+
+  {
+    GstMemory *mem_check = gst_buffer_peek_memory(out_buf, 0);
+    if (!gst_is_gl_memory(mem_check)) {
+      GST_ERROR_OBJECT(glav,
+          "Output buffer memory is not GLMemory (type=%s). "
+          "DMABuf was likely negotiated but allocation failed.",
+          g_type_name(G_OBJECT_TYPE(mem_check)));
+      render_slot->gl_result = FALSE;
+      render_slot->out_buf = out_buf;
+      return;
+    }
+  }
 
   // Check for GL sync meta
   GstGLSyncMeta *sync_meta = gst_buffer_get_gl_sync_meta(out_buf);
@@ -554,9 +958,16 @@ static void gst_gl_base_audio_visualizer_fill_gl(GstGLContext *context,
   // }
 
   // map output video frame to buffer outbuf with gl flags
-  gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
+  if (!gst_video_frame_map(&out_video, &pmav->vinfo, out_buf,
                       GST_MAP_WRITE | GST_MAP_GL |
-                          GST_VIDEO_FRAME_MAP_FLAG_NO_REF);
+                          GST_VIDEO_FRAME_MAP_FLAG_NO_REF)) {
+    GST_ERROR_OBJECT(glav,
+        "Failed to map output buffer as GL video frame (format=%s)",
+        gst_video_format_to_string(GST_VIDEO_INFO_FORMAT(&pmav->vinfo)));
+    render_slot->gl_result = FALSE;
+    render_slot->out_buf = out_buf;
+    return;
+  }
 
   GstAVRenderParams ds_rd;
   ds_rd.in_audio = render_slot->in_audio;
@@ -695,6 +1106,11 @@ static void gst_gl_base_audio_visualizer_stop(GstGLBaseAudioVisualizer *glav) {
   }
 
   glav->context = NULL;
+
+#ifdef HAVE_DMABUF
+  gst_gl_base_audio_visualizer_cleanup_gbm(glav);
+#endif
+
   g_rec_mutex_unlock(&glav->priv->context_lock);
 }
 
@@ -833,6 +1249,334 @@ error: {
 }
 }
 
+/**
+ * Determine output mode from downstream caps in the allocation query.
+ *
+ * Handles both GStreamer >= 1.24 DMA_DRM caps (format=DMA_DRM with
+ * drm-format field) and legacy caps (format=NV12/RGBA with
+ * memory:DMABuf feature).
+ *
+ * @param glav  The plugin instance.
+ * @param query The allocation query from downstream.
+ * @return The selected output mode.
+ */
+static GstDmaBufOutputMode
+gst_gl_base_audio_visualizer_detect_mode(GstGLBaseAudioVisualizer *glav,
+                                          GstQuery *query) {
+  GstCaps *caps = NULL;
+  GstStructure *s;
+  const gchar *format_str;
+  GstCapsFeatures *features;
+
+  gst_query_parse_allocation(query, &caps, NULL);
+  if (!caps) {
+    GST_DEBUG_OBJECT(glav, "No caps in allocation query, using GLMemory");
+    return GST_DMABUF_MODE_GLMEMORY_RGBA;
+  }
+
+  s = gst_caps_get_structure(caps, 0);
+  features = gst_caps_get_features(caps, 0);
+
+  /* Check if caps have DMABuf memory feature */
+  if (features && gst_caps_features_contains(features, "memory:DMABuf")) {
+    format_str = gst_structure_get_string(s, "format");
+
+    /*
+     * GStreamer >= 1.24 DMABuf protocol: format=DMA_DRM with drm-format
+     * field containing "NV12", "NV12:0x01...", "AR24", etc.
+     */
+    if (format_str && g_strcmp0(format_str, "DMA_DRM") == 0) {
+      const gchar *drm_fmt = gst_structure_get_string(s, "drm-format");
+      if (drm_fmt && g_str_has_prefix(drm_fmt, "NV12")) {
+        GST_INFO_OBJECT(glav,
+            "Downstream requests DMABuf DMA_DRM NV12 (drm-format=%s)",
+            drm_fmt);
+        return GST_DMABUF_MODE_DMABUF_NV12;
+      }
+      GST_INFO_OBJECT(glav,
+          "Downstream requests DMABuf DMA_DRM RGBA (drm-format=%s)",
+          drm_fmt ? drm_fmt : "(null)");
+      return GST_DMABUF_MODE_DMABUF_RGBA;
+    }
+
+    /* Legacy DMABuf caps with standard video format names */
+    if (format_str && g_strcmp0(format_str, "NV12") == 0) {
+      GST_INFO_OBJECT(glav, "Downstream requests DMABuf NV12 (legacy)");
+      return GST_DMABUF_MODE_DMABUF_NV12;
+    }
+
+    GST_INFO_OBJECT(glav, "Downstream requests DMABuf RGBA (format=%s)",
+                    format_str ? format_str : "(null)");
+    return GST_DMABUF_MODE_DMABUF_RGBA;
+  }
+
+  /* Check for GLMemory feature — this is the standard GL path */
+  if (features && gst_caps_features_contains(features, "memory:GLMemory")) {
+    GST_DEBUG_OBJECT(glav, "Downstream requests GLMemory, using GLMemory path");
+    return GST_DMABUF_MODE_GLMEMORY_RGBA;
+  }
+
+  GST_DEBUG_OBJECT(glav, "Downstream does not request DMABuf, using GLMemory");
+  return GST_DMABUF_MODE_GLMEMORY_RGBA;
+}
+
+/**
+ * Build DMABuf caps using the GStreamer >= 1.24 DMA_DRM protocol.
+ *
+ * Produces caps of the form:
+ *   video/x-raw(memory:DMABuf), format=DMA_DRM, drm-format=NV12, ...
+ *
+ * Per the GStreamer DMABuf design document:
+ * - Linear modifier (0x0): drm-format is just the fourcc, e.g. "NV12"
+ * - Non-linear modifier:   drm-format includes suffix, e.g. "NV12:0x01..."
+ *
+ * @param mode     The DMABuf mode (NV12 or RGBA).
+ * @param modifier The DRM modifier from GBM allocation.
+ * @param width    Video width.
+ * @param height   Video height.
+ * @param fps_n    FPS numerator.
+ * @param fps_d    FPS denominator.
+ *
+ * @return New caps, or NULL on error.  Caller owns the reference.
+ */
+static GstCaps *
+gst_gl_base_audio_visualizer_build_dmabuf_caps(GstDmaBufOutputMode mode,
+                                                guint64 modifier,
+                                                gint width, gint height,
+                                                gint fps_n, gint fps_d) {
+  GstCaps *caps;
+  const gchar *drm_fourcc;
+  gchar *drm_format_str;
+
+  if (mode == GST_DMABUF_MODE_DMABUF_NV12) {
+    drm_fourcc = "NV12";
+  } else {
+    drm_fourcc = "AR24"; /* DRM_FORMAT_ARGB8888 */
+  }
+
+  /* Linear modifier (0) omits the suffix per the DMABuf spec */
+  if (modifier != 0) {
+    drm_format_str = g_strdup_printf(
+        "%s:0x%016" G_GINT64_MODIFIER "x", drm_fourcc, modifier);
+  } else {
+    drm_format_str = g_strdup(drm_fourcc);
+  }
+
+  caps = gst_caps_new_simple("video/x-raw",
+      "format", G_TYPE_STRING, "DMA_DRM",
+      "drm-format", G_TYPE_STRING, drm_format_str,
+      "width", G_TYPE_INT, width,
+      "height", G_TYPE_INT, height,
+      "framerate", GST_TYPE_FRACTION, fps_n, fps_d,
+      NULL);
+
+  gst_caps_set_features(caps, 0,
+      gst_caps_features_new("memory:DMABuf", NULL));
+
+  GST_DEBUG("Built DMABuf caps: %" GST_PTR_FORMAT, caps);
+
+  g_free(drm_format_str);
+  return caps;
+}
+
+/**
+ * DMABuf decide_allocation implementation.
+ *
+ * For NV12: Accept the downstream pool (e.g. GstVaPool from vah264enc).
+ *   The encoder allocates tiled NV12 surfaces.  We import the per-plane
+ *   DMABufs as R8/GR88 EGLImages, render RGBA → NV12 via shader, and
+ *   push the same buffer back.  True zero-copy.
+ *
+ * For RGBA: Use our own GBM pool (existing path).
+ *
+ * @return TRUE on success, FALSE to fall back to GLMemory.
+ */
+static gboolean
+gst_gl_base_audio_visualizer_decide_allocation_dmabuf(
+    GstGLBaseAudioVisualizer *glav,
+    GstQuery *query,
+    GstGLContext *context,
+    GstPMAudioVisualizer *pmav) {
+  GstDmaBufOutputMode mode;
+  guint width, height;
+
+  mode = gst_gl_base_audio_visualizer_detect_mode(glav, query);
+
+  if (mode == GST_DMABUF_MODE_GLMEMORY_RGBA) {
+    glav->priv->dmabuf_mode = GST_DMABUF_MODE_GLMEMORY_RGBA;
+    return FALSE;
+  }
+
+  /*
+   * DMABuf import requires EGL (eglCreateImageKHR).
+   * On GLX-only contexts (e.g. NVIDIA + X11), EGL functions are not
+   * available and DMABuf import will crash.  Fall back to GLMemory.
+   */
+  {
+    GstGLPlatform platform = gst_gl_context_get_gl_platform(context);
+    if (!(platform & GST_GL_PLATFORM_EGL)) {
+      GST_WARNING_OBJECT(glav,
+          "DMABuf import requires EGL but GL context is %s (platform=0x%x). "
+          "Falling back to GLMemory. "
+          "Try: GST_GL_PLATFORM=egl or use gldownload ! videoconvert",
+          platform == GST_GL_PLATFORM_GLX ? "GLX" : "non-EGL",
+          platform);
+      glav->priv->dmabuf_mode = GST_DMABUF_MODE_GLMEMORY_RGBA;
+      return FALSE;
+    }
+  }
+
+  width = GST_VIDEO_INFO_WIDTH(&pmav->vinfo);
+  height = GST_VIDEO_INFO_HEIGHT(&pmav->vinfo);
+
+  if (width == 0 || height == 0) {
+    GST_ELEMENT_ERROR(glav, STREAM, FORMAT,
+        ("Invalid video dimensions %ux%u", width, height), (NULL));
+    return FALSE;
+  }
+
+  /* Parse DRM modifier from downstream caps drm-format field.
+   * e.g. "NV12:0x0200000018601b04" → modifier 0x0200000018601b04
+   * Plain "NV12" → modifier 0 (LINEAR). */
+  {
+    GstCaps *alloc_caps = NULL;
+    guint64 caps_modifier = 0;
+    gst_query_parse_allocation(query, &alloc_caps, NULL);
+    if (alloc_caps) {
+      GstStructure *s = gst_caps_get_structure(alloc_caps, 0);
+      const gchar *drm_fmt = gst_structure_get_string(s, "drm-format");
+      if (drm_fmt) {
+        const gchar *colon = strchr(drm_fmt, ':');
+        if (colon) {
+          caps_modifier = g_ascii_strtoull(colon + 1, NULL, 16);
+          GST_INFO_OBJECT(glav, "Parsed DRM modifier 0x%" G_GINT64_MODIFIER
+                          "x from drm-format=%s", caps_modifier, drm_fmt);
+        }
+      }
+    }
+    glav->priv->drm_modifier = caps_modifier;
+    glav->priv->drm_modifier_valid = TRUE;
+  }
+
+  if (mode == GST_DMABUF_MODE_DMABUF_NV12) {
+    /*
+     * NV12: Accept downstream pool as-is.
+     *
+     * The downstream encoder put its pool in the allocation query.
+     * We do NOT create our own pool.  We leave the query untouched
+     * so prepare_output_buffer() acquires from the downstream pool.
+     */
+    if (gst_query_get_n_allocation_pools(query) < 1) {
+      GST_ELEMENT_ERROR(glav, STREAM, FORMAT,
+          ("NV12 DMABuf requires a downstream pool, but none provided."),
+          ("Try: projectm ! gldownload ! videoconvert ! vah264enc"));
+      return FALSE;
+    }
+
+    if (glav->priv->dmabuf_pool) {
+      gst_buffer_pool_set_active(
+          GST_BUFFER_POOL(glav->priv->dmabuf_pool), FALSE);
+      gst_object_unref(glav->priv->dmabuf_pool);
+      glav->priv->dmabuf_pool = NULL;
+    }
+
+    glav->priv->dmabuf_mode = mode;
+    glav->priv->use_downstream_pool = TRUE;
+
+    GST_INFO_OBJECT(glav,
+        "NV12 DMABuf: accepting downstream pool, %ux%u, "
+        "modifier=0x%" G_GINT64_MODIFIER "x",
+        width, height, glav->priv->drm_modifier);
+    return TRUE;
+  }
+
+  /* ── RGBA: Use our own GBM pool (unchanged from baseline) ── */
+
+  if (!gst_gl_base_audio_visualizer_init_gbm(glav)) {
+    GST_ELEMENT_ERROR(glav, RESOURCE, NOT_FOUND,
+        ("GBM device init failed (no /dev/dri/renderD* accessible?)"),
+        ("Cannot create DMABuf buffers without GBM device"));
+    return FALSE;
+  }
+
+  if (glav->priv->dmabuf_pool) {
+    gst_buffer_pool_set_active(
+        GST_BUFFER_POOL(glav->priv->dmabuf_pool), FALSE);
+    gst_object_unref(glav->priv->dmabuf_pool);
+    glav->priv->dmabuf_pool = NULL;
+  }
+
+  glav->priv->dmabuf_pool = gst_dmabuf_pool_new(
+      glav->priv->gbm_device, mode, width, height,
+      glav->priv->drm_modifier);
+
+  if (!glav->priv->dmabuf_pool) {
+    GST_ELEMENT_ERROR(glav, RESOURCE, NO_SPACE_LEFT,
+        ("Failed to create RGBA DMABuf pool (%ux%u)", width, height), (NULL));
+    return FALSE;
+  }
+
+  {
+    GstCaps *pool_caps;
+    GstBufferPool *bpool = GST_BUFFER_POOL(glav->priv->dmabuf_pool);
+    GstStructure *config;
+    GstVideoInfo pool_vinfo;
+
+    gst_video_info_set_format(&pool_vinfo, GST_VIDEO_FORMAT_BGRA, width, height);
+    GST_VIDEO_INFO_FPS_N(&pool_vinfo) = GST_VIDEO_INFO_FPS_N(&pmav->vinfo);
+    GST_VIDEO_INFO_FPS_D(&pool_vinfo) = GST_VIDEO_INFO_FPS_D(&pmav->vinfo);
+    pool_caps = gst_video_info_to_caps(&pool_vinfo);
+    gst_caps_set_features(pool_caps, 0,
+        gst_caps_features_new("memory:DMABuf", NULL));
+
+    config = gst_buffer_pool_get_config(bpool);
+    gst_buffer_pool_config_set_params(config, pool_caps, 0, 0, 0);
+    gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
+
+    if (!gst_buffer_pool_set_config(bpool, config)) {
+      gst_caps_unref(pool_caps);
+      gst_object_unref(glav->priv->dmabuf_pool);
+      glav->priv->dmabuf_pool = NULL;
+      return FALSE;
+    }
+    gst_caps_unref(pool_caps);
+
+    /* Probe allocation */
+    GstBuffer *probe = NULL;
+    if (!gst_buffer_pool_set_active(bpool, TRUE) ||
+        gst_buffer_pool_acquire_buffer(bpool, &probe, NULL) != GST_FLOW_OK ||
+        probe == NULL) {
+      GST_WARNING_OBJECT(glav, "RGBA GBM probe failed");
+      gst_buffer_pool_set_active(bpool, FALSE);
+      gst_object_unref(glav->priv->dmabuf_pool);
+      glav->priv->dmabuf_pool = NULL;
+      return FALSE;
+    }
+    glav->priv->drm_modifier =
+        gst_dmabuf_pool_get_modifier(glav->priv->dmabuf_pool);
+    glav->priv->drm_modifier_valid = TRUE;
+    gst_buffer_unref(probe);
+    gst_buffer_pool_set_active(bpool, FALSE);
+  }
+
+  glav->priv->dmabuf_mode = mode;
+  glav->priv->use_downstream_pool = FALSE;
+
+  if (gst_query_get_n_allocation_pools(query) > 0)
+    gst_query_set_nth_allocation_pool(query, 0,
+        GST_BUFFER_POOL(glav->priv->dmabuf_pool), 0, 0, 0);
+  else
+    gst_query_add_allocation_pool(query,
+        GST_BUFFER_POOL(glav->priv->dmabuf_pool), 0, 0, 0);
+
+  GST_INFO_OBJECT(glav, "RGBA DMABuf: GBM pool, %ux%u, "
+                  "modifier=0x%" G_GINT64_MODIFIER "x",
+                  width, height, glav->priv->drm_modifier);
+  return TRUE;
+}
+
+#endif /* HAVE_DMABUF */
+
 static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
     GstPMAudioVisualizer *pmav, GstQuery *query) {
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(pmav);
@@ -851,6 +1595,19 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
   context = gst_object_ref(glav->context);
   g_rec_mutex_unlock(&glav->priv->context_lock);
 
+#ifdef HAVE_DMABUF
+  /* Try DMABuf allocation first; falls back to GLMemory if not applicable */
+  if (gst_gl_base_audio_visualizer_decide_allocation_dmabuf(
+          glav, query, context, pmav)) {
+    gst_object_unref(context);
+    GST_INFO_OBJECT(glav, "Using DMABuf output mode %d",
+                    glav->priv->dmabuf_mode);
+    return TRUE;
+  }
+  /* If we get here, use the standard GLMemory path below */
+  GST_DEBUG_OBJECT(glav, "DMABuf not selected or failed, using GLMemory");
+#endif
+
   gst_query_parse_allocation(query, &caps, NULL);
 
   if (gst_query_get_n_allocation_pools(query) > 0) {
@@ -861,7 +1618,11 @@ static gboolean gst_gl_base_audio_visualizer_parent_decide_allocation(
     GstVideoInfo vinfo;
 
     gst_video_info_init(&vinfo);
-    gst_video_info_from_caps(&vinfo, caps);
+    /* gst_video_info_from_caps cannot parse DMA_DRM caps.  Use the
+       already-parsed vinfo from src_setcaps instead. */
+    if (!gst_video_info_from_caps(&vinfo, caps)) {
+      vinfo = pmav->vinfo;
+    }
     size = vinfo.size;
     min = 0;
     max = 0;

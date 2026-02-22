@@ -509,8 +509,51 @@ static gboolean gst_pm_audio_visualizer_src_setcaps(GstPMAudioVisualizer *scope,
                                                     GstCaps *caps) {
   GstVideoInfo info;
   gboolean res;
+  gboolean info_ok = FALSE;
 
-  if (!gst_video_info_from_caps(&info, caps))
+  /*
+   * GStreamer >= 1.24 DMABuf caps use format=DMA_DRM which cannot be
+   * parsed by gst_video_info_from_caps().  For these caps we extract
+   * the actual pixel format from the drm-format field and build a
+   * GstVideoInfo with the real format, dimensions and framerate.
+   */
+  {
+    GstStructure *s = gst_caps_get_structure(caps, 0);
+    const gchar *fmt = gst_structure_get_string(s, "format");
+
+    if (fmt && g_strcmp0(fmt, "DMA_DRM") == 0) {
+      const gchar *drm_fmt = gst_structure_get_string(s, "drm-format");
+      GstVideoFormat vfmt = GST_VIDEO_FORMAT_UNKNOWN;
+      gint w = 0, h = 0, fps_n = 0, fps_d = 1;
+
+      if (drm_fmt) {
+        if (g_str_has_prefix(drm_fmt, "NV12"))
+          vfmt = GST_VIDEO_FORMAT_NV12;
+        else if (g_str_has_prefix(drm_fmt, "AR24"))
+          vfmt = GST_VIDEO_FORMAT_BGRA;
+        else if (g_str_has_prefix(drm_fmt, "AB24"))
+          vfmt = GST_VIDEO_FORMAT_RGBA;
+      }
+
+      if (vfmt != GST_VIDEO_FORMAT_UNKNOWN) {
+        gst_structure_get_int(s, "width", &w);
+        gst_structure_get_int(s, "height", &h);
+        gst_structure_get_fraction(s, "framerate", &fps_n, &fps_d);
+
+        gst_video_info_set_format(&info, vfmt, w, h);
+        GST_VIDEO_INFO_FPS_N(&info) = fps_n;
+        GST_VIDEO_INFO_FPS_D(&info) = fps_d;
+
+        GST_INFO_OBJECT(scope,
+            "DMA_DRM caps: drm-format=%s -> %s %dx%d @ %d/%d",
+            drm_fmt, gst_video_format_to_string(vfmt), w, h, fps_n, fps_d);
+
+        info_ok = TRUE;
+      }
+    }
+  }
+
+  if (!info_ok && !gst_video_info_from_caps(&info, caps))
     goto wrong_caps;
 
   g_mutex_lock(&scope->priv->config_lock);
@@ -557,6 +600,19 @@ gst_pm_audio_visualizer_src_negotiate(GstPMAudioVisualizer *scope) {
   gboolean ret;
 
   templ = gst_pad_get_pad_template_caps(scope->srcpad);
+
+  /* Allow subclass to filter out unsupported caps */
+  {
+    GstPMAudioVisualizerClass *klass =
+        GST_PM_AUDIO_VISUALIZER_CLASS(G_OBJECT_GET_CLASS(scope));
+    if (klass->filter_src_caps) {
+      GstCaps *filtered = klass->filter_src_caps(scope, templ);
+      if (filtered) {
+        gst_caps_unref(templ);
+        templ = filtered;
+      }
+    }
+  }
 
   GST_DEBUG_OBJECT(scope, "performing negotiation");
 

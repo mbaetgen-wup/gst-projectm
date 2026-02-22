@@ -36,6 +36,12 @@
 
 #include <gst/gl/gstgl_fwd.h>
 
+#ifdef HAVE_DMABUF
+#include "gstdmabufpool.h"
+#include "gstnv12shader.h"
+#include "gstdmabufegl.h"
+#endif
+
 typedef struct _GstGLBaseAudioVisualizer GstGLBaseAudioVisualizer;
 typedef struct _GstGLBaseAudioVisualizerClass GstGLBaseAudioVisualizerClass;
 typedef struct _GstGLBaseAudioVisualizerPrivate GstGLBaseAudioVisualizerPrivate;
