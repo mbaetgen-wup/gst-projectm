@@ -59,7 +59,6 @@ enum {
 #define DEFAULT_MIN_FPS "1/1"
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
-#define DEFAULT_IS_LIVE "auto"
 
 static gboolean gst_projectm_base_log_preset_change(gpointer preset) {
   GST_INFO("Preset: %s", (char *)preset);
@@ -207,7 +206,9 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
                   settings->aspect_correction, settings->easter_egg,
                   settings->preset_locked, settings->enable_playlist,
                   settings->shuffle_presets, settings->min_fps_n,
-                  settings->min_fps_d, settings->is_live);
+                  settings->min_fps_d,
+                  gst_gl_base_audio_visualizer_mode_to_string(
+                      GST_GL_BASE_AUDIO_VISUALIZER(plugin)->is_live));
 
   // Load preset file if path is provided
   if (settings->preset_path != NULL) {
@@ -243,7 +244,8 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
   if (settings->preset_duration > 0.0) {
     projectm_set_preset_duration(result.ret_handle, settings->preset_duration);
     // kick off the first preset
-    if (projectm_playlist_size(result.ret_playlist) > 1 &&
+    if (result.ret_playlist != NULL &&
+        projectm_playlist_size(result.ret_playlist) > 1 &&
         !settings->preset_locked) {
       projectm_playlist_play_next(result.ret_playlist, true);
     }
@@ -347,9 +349,8 @@ void gst_projectm_base_set_property(GObject *object,
     break;
   }
   case PROP_IS_LIVE:
-    g_free(settings->is_live);
-    settings->is_live = g_strdup(g_value_get_string(value));
-    g_object_set(G_OBJECT(glav), "pipeline-live", settings->is_live, NULL);
+    glav->is_live =
+        gst_gl_base_audio_visualizer_mode_from_string(g_value_get_string(value));
     break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
@@ -363,7 +364,7 @@ void gst_projectm_base_get_property(GObject *object,
                                     GParamSpec *pspec) {
 
   const gchar *property_name = g_param_spec_get_name(pspec);
-  GST_DEBUG_OBJECT(settings, "get-property <%s>", property_name);
+  GST_DEBUG_OBJECT(object, "get-property <%s>", property_name);
 
   GstGLBaseAudioVisualizer *glav = GST_GL_BASE_AUDIO_VISUALIZER(object);
 
@@ -419,13 +420,11 @@ void gst_projectm_base_get_property(GObject *object,
         g_strdup_printf("%d/%d", settings->min_fps_n, settings->min_fps_d);
     g_value_set_string(value, fpsStr);
     g_free(fpsStr);
-
-    g_object_set(G_OBJECT(glav), "min-fps-n", settings->min_fps_n, "min-fps-d",
-                 settings->min_fps_d, NULL);
     break;
   }
   case PROP_IS_LIVE:
-    g_value_set_string(value, settings->is_live);
+    g_value_set_string(value,
+        gst_gl_base_audio_visualizer_mode_to_string(glav->is_live));
     break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
@@ -528,6 +527,8 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
                                : log_level,
                            false);
     projectm_set_log_callback(&gst_projectm_base_log_message, false, NULL);
+
+    g_once_init_leave(&_debug_initialized, 1);
   }
 
   // Set default values for properties
@@ -541,9 +542,6 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
   settings->preset_duration = DEFAULT_PRESET_DURATION;
   settings->enable_playlist = DEFAULT_ENABLE_PLAYLIST;
   settings->shuffle_presets = DEFAULT_SHUFFLE_PRESETS;
-  settings->min_fps_d = DEFAULT_MIN_FPS_D;
-  settings->min_fps_n = DEFAULT_MIN_FPS_N;
-  settings->is_live = g_strdup(DEFAULT_IS_LIVE);
 
   const gchar *meshSizeStr = DEFAULT_MESH_SIZE;
 
@@ -573,7 +571,6 @@ void gst_projectm_base_finalize(GstBaseProjectMSettings *settings,
                                 GstBaseProjectMPrivate *priv) {
   g_free(settings->preset_path);
   g_free(settings->texture_dir_path);
-  g_free(settings->is_live);
   g_mutex_clear(&priv->projectm_lock);
 }
 
@@ -649,12 +646,14 @@ void gst_projectm_base_fill_audio_buffer_unlocked(GstBaseProjectMPrivate *priv,
 
     GstMapInfo audioMap;
 
-    gst_buffer_map(in_audio, &audioMap, GST_MAP_READ);
+    if (gst_buffer_map(in_audio, &audioMap, GST_MAP_READ)) {
+      projectm_pcm_add_int16(priv->handle, (gint16 *)audioMap.data,
+                             audioMap.size / 4, PROJECTM_STEREO);
 
-    projectm_pcm_add_int16(priv->handle, (gint16 *)audioMap.data,
-                           audioMap.size / 4, PROJECTM_STEREO);
-
-    gst_buffer_unmap(in_audio, &audioMap);
+      gst_buffer_unmap(in_audio, &audioMap);
+    } else {
+      GST_WARNING("Failed to map audio buffer for reading");
+    }
   }
 }
 
@@ -836,5 +835,5 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
           "not appropriate. Possible values are \"auto\", \"true\", "
           "\"false\". "
           "Default is \"auto\".",
-          DEFAULT_IS_LIVE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          "auto", G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }

@@ -13,6 +13,18 @@
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_debug);
 #define GST_CAT_DEFAULT gst_projectm_debug
 
+static void gst_projectm_set_property(GObject *object, guint prop_id,
+                                      const GValue *value, GParamSpec *pspec);
+static void gst_projectm_get_property(GObject *object, guint prop_id,
+                                      GValue *value, GParamSpec *pspec);
+static void gst_projectm_init(GstProjectM *plugin);
+static void gst_projectm_finalize(GObject *object);
+static gboolean gst_projectm_gl_start(GstGLBaseAudioVisualizer *glav);
+static void gst_projectm_gl_stop(GstGLBaseAudioVisualizer *glav);
+static gboolean gst_projectm_fill_gl_memory(GstAVRenderParams *render_data);
+static void gst_projectm_class_init(GstProjectMClass *klass);
+static gboolean gst_projectm_setup(GstGLBaseAudioVisualizer *glav);
+
 struct _GstProjectMPrivate {
 
   GstBaseProjectMPrivate base;
@@ -58,11 +70,11 @@ static void gst_projectm_finalize(GObject *object) {
   G_OBJECT_CLASS(gst_projectm_parent_class)->finalize(object);
 }
 
-static void gst_projectm_gl_stop(GstGLBaseAudioVisualizer *src) {
+static void gst_projectm_gl_stop(GstGLBaseAudioVisualizer *glav) {
 
-  GstProjectM *plugin = GST_PROJECTM(src);
+  GstProjectM *plugin = GST_PROJECTM(glav);
 
-  gst_projectm_base_gl_stop(G_OBJECT(src), &plugin->priv->base);
+  gst_projectm_base_gl_stop(G_OBJECT(glav), &plugin->priv->base);
 }
 
 static gboolean gst_projectm_gl_start(GstGLBaseAudioVisualizer *glav) {
@@ -70,12 +82,14 @@ static gboolean gst_projectm_gl_start(GstGLBaseAudioVisualizer *glav) {
   GstProjectM *plugin = GST_PROJECTM(glav);
   GstPMAudioVisualizer *pmav = GST_PM_AUDIO_VISUALIZER(glav);
 
-  gst_projectm_base_gl_start(G_OBJECT(glav), &plugin->priv->base,
+  gboolean ret = gst_projectm_base_gl_start(G_OBJECT(glav), &plugin->priv->base,
                              &plugin->settings, glav->context, &pmav->vinfo);
 
-  GST_INFO_OBJECT(plugin, "GL start complete");
+  if (ret) {
+    GST_INFO_OBJECT(plugin, "GL start complete");
+  }
 
-  return TRUE;
+  return ret;
 }
 
 static gboolean gst_projectm_setup(GstGLBaseAudioVisualizer *glav) {

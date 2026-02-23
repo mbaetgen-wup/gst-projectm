@@ -22,7 +22,6 @@ struct _GstBaseProjectMSettings {
 
   gchar *preset_path;
   gchar *texture_dir_path;
-  gchar *is_live;
 
   gfloat beat_sensitivity;
   gdouble hard_cut_duration;
@@ -76,7 +75,7 @@ typedef struct _GstBaseProjectMSettings GstBaseProjectMSettings;
 typedef struct _GstBaseProjectMInitResult GstBaseProjectMInitResult;
 
 /**
- * get_property delegate for projectM setting structs.
+ * set_property delegate for projectM setting structs.
  *
  * @param object Plugin gst object.
  * @param settings Settings struct to update.
@@ -90,7 +89,7 @@ void gst_projectm_base_set_property(GObject *object,
                                     GParamSpec *pspec);
 
 /**
- * set_property delegate for projectM setting structs.
+ * get_property delegate for projectM setting structs.
  *
  * @param object Plugin gst object.
  * @param settings Settings struct to update.

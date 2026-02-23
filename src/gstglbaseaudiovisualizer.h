@@ -200,4 +200,17 @@ struct _GstAVRenderParams {
 
 G_END_DECLS
 
+/**
+ * Convert a string ("true", "false", "auto") to a GstGLBaseAudioVisualizerMode.
+ */
+GstGLBaseAudioVisualizerMode
+gst_gl_base_audio_visualizer_mode_from_string(const gchar *str);
+
+/**
+ * Convert a GstGLBaseAudioVisualizerMode to a string ("true", "false", "auto").
+ * Returns a static string; do not free.
+ */
+const gchar *
+gst_gl_base_audio_visualizer_mode_to_string(GstGLBaseAudioVisualizerMode mode);
+
 #endif /* __GST_GL_BASE_AUDIO_VISUALIZER_H__ */
