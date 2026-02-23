@@ -38,26 +38,6 @@ struct _GstProjectMClass {
   gpointer _padding[GST_PADDING];
 };
 
-static void gst_projectm_set_property(GObject *object, guint prop_id,
-                                      const GValue *value, GParamSpec *pspec);
-
-static void gst_projectm_get_property(GObject *object, guint prop_id,
-                                      GValue *value, GParamSpec *pspec);
-
-static void gst_projectm_init(GstProjectM *plugin);
-
-static void gst_projectm_finalize(GObject *object);
-
-static gboolean gst_projectm_gl_start(GstGLBaseAudioVisualizer *glav);
-
-static void gst_projectm_gl_stop(GstGLBaseAudioVisualizer *glav);
-
-static gboolean gst_projectm_fill_gl_memory(GstAVRenderParams *render_data);
-
-static void gst_projectm_class_init(GstProjectMClass *klass);
-
-static gboolean gst_projectm_setup(GstGLBaseAudioVisualizer *glav);
-
 G_END_DECLS
 
 #endif /* __GST_PROJECTM_H__ */

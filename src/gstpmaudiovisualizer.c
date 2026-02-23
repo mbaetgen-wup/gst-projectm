@@ -542,11 +542,6 @@ wrong_caps: {
   GST_DEBUG_OBJECT(scope, "error parsing caps");
   return FALSE;
 }
-
-setup_failed: {
-  GST_WARNING_OBJECT(scope, "failed to set up");
-  return FALSE;
-}
 }
 
 static gboolean
@@ -702,8 +697,10 @@ gst_pm_audio_visualizer_default_decide_allocation(GstPMAudioVisualizer *scope,
                                                   GstQuery *query) {
   /* removed main memory pool implementation. This vmethod is overridden for
    * using gl memory by gstglbaseaudiovisualizer. */
-  g_error("vmethod gst_pm_audio_visualizer_default_decide_allocation is not "
-          "implemented");
+  GST_ELEMENT_ERROR(scope, LIBRARY, INIT,
+                    ("decide_allocation not implemented"),
+                    ("Subclass must override decide_allocation"));
+  return FALSE;
 }
 
 GstFlowReturn
