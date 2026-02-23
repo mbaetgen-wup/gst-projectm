@@ -97,7 +97,6 @@ GST_DEBUG_CATEGORY_STATIC(gst_gl_base_audio_visualizer_debug);
  */
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
-#define DEFAULT_PIPELINE_LIVE "auto"
 
 struct _GstGLBaseAudioVisualizerPrivate {
   GstGLContext *other_context;
@@ -113,7 +112,7 @@ struct _GstGLBaseAudioVisualizerPrivate {
 };
 
 /* Properties */
-enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D, PROP_PIPELINE_LIVE };
+enum { PROP_0, PROP_MIN_FPS_N, PROP_MIN_FPS_D };
 
 #define gst_gl_base_audio_visualizer_parent_class parent_class
 G_DEFINE_ABSTRACT_TYPE_WITH_CODE(
@@ -269,15 +268,6 @@ gst_gl_base_audio_visualizer_class_init(GstGLBaseAudioVisualizerClass *klass) {
                        "Specifies the denominator for the min fps (EMA)", 1,
                        1000, DEFAULT_MIN_FPS_D,
                        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property(
-      gobject_class, PROP_PIPELINE_LIVE,
-      g_param_spec_string("pipeline-live", "Pipeline Live",
-                          "Specifies if this element renders in real-time "
-                          "(true) or as fast as possible for offline rendering "
-                          "(false) or to auto-detect pipeline clock (auto)",
-                          DEFAULT_PIPELINE_LIVE,
-                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 /**
@@ -340,17 +330,6 @@ static void gst_gl_base_audio_visualizer_set_property(GObject *object,
     glav->min_fps_d = g_value_get_int(value);
     break;
 
-  case PROP_PIPELINE_LIVE:
-    const char *str = g_value_get_string(value);
-    if (strcasecmp("true", str) == 0) {
-      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_REALTIME;
-    } else if (strcasecmp("false", str) == 0) {
-      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE;
-    } else {
-      glav->is_live = GST_GL_BASE_AUDIO_VISUALIZER_AUTO;
-    }
-    break;
-
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
     break;
@@ -371,16 +350,6 @@ static void gst_gl_base_audio_visualizer_get_property(GObject *object,
 
   case PROP_MIN_FPS_D:
     g_value_set_int(value, glav->min_fps_d);
-    break;
-
-  case PROP_PIPELINE_LIVE:
-    if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_REALTIME) {
-      g_value_set_string(value, "true");
-    } else if (glav->is_live == GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE) {
-      g_value_set_string(value, "false");
-    } else {
-      g_value_set_string(value, "auto");
-    }
     break;
 
   default:
@@ -980,4 +949,28 @@ gst_gl_base_audio_visualizer_change_state(GstElement *element,
   }
 
   return ret;
+}
+
+GstGLBaseAudioVisualizerMode
+gst_gl_base_audio_visualizer_mode_from_string(const gchar *str) {
+  if (str != NULL) {
+    if (strcasecmp("true", str) == 0) {
+      return GST_GL_BASE_AUDIO_VISUALIZER_REALTIME;
+    } else if (strcasecmp("false", str) == 0) {
+      return GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE;
+    }
+  }
+  return GST_GL_BASE_AUDIO_VISUALIZER_AUTO;
+}
+
+const gchar *
+gst_gl_base_audio_visualizer_mode_to_string(GstGLBaseAudioVisualizerMode mode) {
+  switch (mode) {
+  case GST_GL_BASE_AUDIO_VISUALIZER_REALTIME:
+    return "true";
+  case GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE:
+    return "false";
+  default:
+    return "auto";
+  }
 }

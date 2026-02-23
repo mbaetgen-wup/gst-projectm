@@ -22,7 +22,6 @@ struct _GstBaseProjectMSettings {
 
   gchar *preset_path;
   gchar *texture_dir_path;
-  gchar *is_live;
 
   gfloat beat_sensitivity;
   gdouble hard_cut_duration;
