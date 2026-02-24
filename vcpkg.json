@@ -12,6 +12,10 @@
     },
     "gstreamer",
     {
+      "name": "opengl-registry",
+      "platform": "windows"
+    },
+    {
       "name": "pkgconf",
       "platform": "windows"
     },
@@ -21,4 +25,3 @@
     }
   ]
 }
-
