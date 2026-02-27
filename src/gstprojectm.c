@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "gstglbaseaudiovisualizer.h"
 #include "gstprojectmcaps.h"
+#include "gstprojectmconfig.h"
 
 #include <gst/gst.h>
 
@@ -168,7 +169,7 @@ static void gst_projectm_class_init(GstProjectMClass *klass) {
 
   gst_element_class_set_static_metadata(
       GST_ELEMENT_CLASS(klass), "ProjectM Visualizer", "Generic",
-      "A plugin for visualizing music using ProjectM",
+      PACKAGE_DESCRIPTION,
       "AnomieVision <anomievision@gmail.com> | Tristan Charpentier "
       "<tristan_charpentier@hotmail.com> | Michael Baetgen "
       "<michael -at- widerup.com>");
