@@ -1,4 +1,3 @@
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -20,16 +19,23 @@
  */
 EXPORT gboolean plugin_init(GstPlugin *plugin) {
 
-  // register main plugin projectM element
-  gboolean p1 = gst_element_register(plugin, "projectm", GST_RANK_NONE,
-                                     GST_TYPE_PROJECTM);
+    // Log vendor metadata for static builds (visible via GST_DEBUG=projectm:4)
+#ifdef HAVE_PROJECTM_VENDOR_INFO
+    GST_INFO("projectM vendor: ref=%s commit=%s timestamp=%s",
+             PROJECTM_VENDOR_REF, PROJECTM_VENDOR_COMMIT,
+             PROJECTM_VENDOR_TIMESTAMP);
+#endif
 
-  // add additional elements here..
+    // register main plugin projectM element
+    gboolean p1 = gst_element_register(plugin, "projectm", GST_RANK_NONE,
+                                       GST_TYPE_PROJECTM);
 
-  return p1;
+    // add additional elements here..
+
+    return p1;
 }
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, projectm,
-                  "plugin to visualize audio using the ProjectM library",
+                  PACKAGE_DESCRIPTION,
                   plugin_init, PACKAGE_VERSION, PACKAGE_LICENSE, PACKAGE_NAME,
                   PACKAGE_ORIGIN)
