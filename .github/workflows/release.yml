@@ -170,6 +170,21 @@ jobs:
           echo "=== Package artifacts ==="
           find release-artifacts -type f 2>/dev/null | sort || echo "(none)"
 
+      - name: Deduplicate and flatten release artifacts
+        run: |
+          mkdir -p release-files
+          # Flatten all artifacts into one directory, skipping duplicates
+          find release-artifacts -type f | while read f; do
+            base=$(basename "$f")
+            if [ ! -f "release-files/${base}" ]; then
+              cp "$f" "release-files/${base}"
+            else
+              echo "Skipping duplicate: ${base}"
+            fi
+          done
+          echo "=== Release files ==="
+          ls -1 release-files/ | sort
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -180,14 +195,7 @@ jobs:
           files: |
             gst-projectm-*-source.tar.gz
             gst-projectm-*-source.zip
-            release-artifacts/**/*.zip
-            release-artifacts/**/*.deb
-            release-artifacts/**/*.dsc
-            release-artifacts/**/*.tar.*
-            release-artifacts/**/*.rpm
-            release-artifacts/**/*.src.rpm
-            release-artifacts/**/*.flatpak
-            release-artifacts/**/*.AppImage
+            release-files/*
           body: |
             ## Source Code
 
