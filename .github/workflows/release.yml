@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -16,41 +17,72 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for all packaging jobs
-        uses: yogeshlonkar/wait-for-jobs@v0
+      - name: Wait for packaging workflows
+        uses: actions/github-script@v7
         with:
-          interval: '10000'
-          no-max-ttl: 'true'
-          jobs: |
-            Package Windows (static-gl)
-            Package Windows (static-gles)
-            Package Windows (dynamic)
-            Package DEB (ubuntu2404, static-gl)
-            Package DEB (ubuntu2404, static-gles)
-            Package DEB (ubuntu2404, dynamic)
-            Package DEB (ubuntu2204, static-gl)
-            Package DEB (ubuntu2204, static-gles)
-            Package DEB (ubuntu2204, dynamic)
-            Package DEB Source (static)
-            Package DEB Source (dynamic)
-            Package RPM (fedora41, static-gl)
-            Package RPM (fedora41, static-gles)
-            Package RPM (fedora41, dynamic)
-            Package RPM (fedora40, static-gl)
-            Package RPM (fedora40, static-gles)
-            Package RPM (fedora40, dynamic)
-            Package Source RPM (static)
-            Package Source RPM (dynamic)
-            Package macOS (static-gl)
-            Package macOS (static-gles)
-            Package macOS (dynamic)
-            Flatpak (gl)
-            Flatpak (gles)
-            AppImage (1.24.12, gl)
-            AppImage (1.24.12, gles)
-            AppImage (1.28.1, gl)
-            AppImage (1.28.1, gles)
-          ttl: '60'
+          script: |
+            const SHA = context.sha;
+            const OWNER = context.repo.owner;
+            const REPO = context.repo.repo;
+            const POLL_INTERVAL = 30000; // 30 seconds
+            const TIMEOUT = 90 * 60 * 1000; // 90 minutes
+
+            const REQUIRED_WORKFLOWS = [
+              'Linux (x86_64)',
+              'Windows (x64)',
+              'macOS (arm64)',
+              'Linux Portable',
+            ];
+
+            const start = Date.now();
+
+            while (Date.now() - start < TIMEOUT) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: OWNER,
+                repo: REPO,
+                head_sha: SHA,
+                per_page: 100,
+              });
+
+              const found = {};
+              for (const run of runs.workflow_runs) {
+                if (REQUIRED_WORKFLOWS.includes(run.name)) {
+                  found[run.name] = run;
+                }
+              }
+
+              const missing = REQUIRED_WORKFLOWS.filter(w => !found[w]);
+              if (missing.length > 0) {
+                core.info(`Waiting for workflows to appear: ${missing.join(', ')}`);
+                await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                continue;
+              }
+
+              const pending = Object.entries(found)
+                .filter(([_, run]) => run.status !== 'completed')
+                .map(([name, run]) => `${name} (${run.status})`);
+
+              if (pending.length > 0) {
+                core.info(`Waiting for: ${pending.join(', ')}`);
+                await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                continue;
+              }
+
+              // All completed — check for failures
+              const failed = Object.entries(found)
+                .filter(([_, run]) => run.conclusion !== 'success')
+                .map(([name, run]) => `${name} (${run.conclusion})`);
+
+              if (failed.length > 0) {
+                core.setFailed(`Workflows failed: ${failed.join(', ')}`);
+                return;
+              }
+
+              core.info('All packaging workflows completed successfully.');
+              return;
+            }
+
+            core.setFailed('Timed out waiting for packaging workflows.');
 
       - name: Create source code archives
         run: |
@@ -66,20 +98,74 @@ jobs:
           pattern: release-*
           path: release-artifacts
           merge-multiple: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.run_id }}
+
+      - name: Download artifacts from packaging workflows
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const SHA = context.sha;
+
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: SHA,
+              per_page: 100,
+            });
+
+            const targetRuns = runs.workflow_runs.filter(r =>
+              ['Linux (x86_64)', 'Windows (x64)', 'macOS (arm64)', 'Linux Portable'].includes(r.name)
+              && r.status === 'completed'
+              && r.conclusion === 'success'
+            );
+
+            for (const run of targetRuns) {
+              core.info(`Downloading artifacts from: ${run.name} (run ${run.id})`);
+              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+
+              for (const artifact of artifacts.artifacts) {
+                if (!artifact.name.startsWith('release-')) continue;
+
+                core.info(`  Downloading: ${artifact.name}`);
+                const download = await github.rest.actions.downloadArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                  archive_format: 'zip',
+                });
+
+                const dir = path.join('release-artifacts', artifact.name);
+                fs.mkdirSync(dir, { recursive: true });
+
+                const zipPath = path.join(dir, '_artifact.zip');
+                fs.writeFileSync(zipPath, Buffer.from(download.data));
+
+                await exec.exec('unzip', ['-o', zipPath, '-d', dir]);
+                fs.unlinkSync(zipPath);
+              }
+            }
 
       - name: List release artifacts
         run: |
           echo "=== Source archives ==="
-          ls -lh gst-projectm-*-source.*
+          ls -lh gst-projectm-*-source.* 2>/dev/null || echo "(none)"
           echo "=== Package artifacts ==="
-          find release-artifacts -type f | sort
+          find release-artifacts -type f 2>/dev/null | sort || echo "(none)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "gst-projectm ${{ github.ref_name }}"
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'pre') }}
           generate_release_notes: true
           files: |
             gst-projectm-*-source.tar.gz
@@ -163,17 +249,14 @@ jobs:
             Self-contained `gst-launch-1.0` bundle with projectM plugin and GStreamer. Licensed under GPL-2.0+ (combined work includes GPL GStreamer plugins).
             ```bash
             flatpak install gst-projectm-*-flatpak-x86_64.flatpak
-            # Run:
-            flatpak run org.projectmvisualizer.GstLaunch \
-              audiotestsrc ! audioconvert ! projectm ! videoconvert ! autovideosink
+            flatpak run org.projectmvisualizer.GstLaunch
             ```
 
             ### Linux Portable — AppImage (x86_64)
             Single-file executable bundling `gst-launch-1.0` with projectM plugin and GStreamer. Licensed under GPL-2.0+ (combined work includes GPL GStreamer plugins).
             ```bash
             chmod +x gst-projectm-*-x86_64.AppImage
-            ./gst-projectm-*-x86_64.AppImage \
-              audiotestsrc ! audioconvert ! projectm ! videoconvert ! autovideosink
+            ./gst-projectm-*-x86_64.AppImage
             ```
 
             ### Build from Source
