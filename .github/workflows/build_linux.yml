@@ -544,9 +544,10 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//.}"
+          DEB_VERSION="${VERSION//-/\~}"
           VARIANT="${{ matrix.variant }}"
           PKG_NAME="gstreamer1.0-projectm-${VARIANT}"
-          SRC_DIR="${PKG_NAME}-${VERSION}"
+          SRC_DIR="${PKG_NAME}-${DEB_VERSION}"
 
           mkdir -p "${SRC_DIR}"
           rsync -a --exclude=build --exclude=dist --exclude=.git \
@@ -560,9 +561,9 @@ jobs:
           mkdir -p "${SRC_DIR}/debian/source"
 
           {
-            printf '%s (%s-1) noble; urgency=medium\n' "${PKG_NAME}" "${VERSION}"
+            printf '%s (%s-1) noble; urgency=medium\n' "${PKG_NAME}" "${DEB_VERSION}"
             printf '\n'
-            printf '  * Release %s\n' "${VERSION}"
+            printf '  * Release %s\n' "${DEB_VERSION}"
             printf '\n'
             printf ' -- projectM Visualizer <projectm.visualizer@gmail.com>  %s\n' "$(date -R)"
           } > "${SRC_DIR}/debian/changelog"
@@ -640,7 +641,7 @@ jobs:
 
           echo "3.0 (quilt)" > "${SRC_DIR}/debian/source/format"
 
-          tar czf "${PKG_NAME}_${VERSION}.orig.tar.gz" "${SRC_DIR}"
+          tar czf "${PKG_NAME}_${DEB_VERSION}.orig.tar.gz" "${SRC_DIR}"
 
           cd "${SRC_DIR}"
           dpkg-source -b .
@@ -686,6 +687,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//.}"
+          RPM_VERSION="${VERSION//-/\~}"
           VARIANT="${{ matrix.variant }}"
 
           mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
@@ -706,7 +708,7 @@ jobs:
           if [ "${VARIANT}" = "static" ]; then
             cat > ~/rpmbuild/SPECS/gst-projectm-${VARIANT}.spec << SPECEOF
           Name:           gstreamer1-projectm-static
-          Version:        ${VERSION}
+          Version:        ${RPM_VERSION}
           Release:        1%{?dist}
           Summary:        GStreamer projectM plugin (static, self-contained)
           License:        LGPLv2+
@@ -765,13 +767,13 @@ jobs:
           %{_libdir}/gstreamer-1.0/libgstprojectm.so
 
           %changelog
-          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${RPM_VERSION}-1
           - Release ${VERSION}
           SPECEOF
           else
             cat > ~/rpmbuild/SPECS/gst-projectm-${VARIANT}.spec << SPECEOF
           Name:           gstreamer1-projectm-dynamic
-          Version:        ${VERSION}
+          Version:        ${RPM_VERSION}
           Release:        1%{?dist}
           Summary:        GStreamer projectM plugin (dynamic linking)
           License:        LGPLv2+
@@ -810,7 +812,7 @@ jobs:
           %{_libdir}/gstreamer-1.0/libgstprojectm.so
 
           %changelog
-          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${RPM_VERSION}-1
           - Release ${VERSION}
           SPECEOF
           fi
@@ -854,6 +856,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//.}"
+          DEB_VERSION="${VERSION//-/\~}"
           VARIANT="${{ matrix.variant }}"
           DISTRO="${{ matrix.distro.artifact }}"
           ARCH=$(dpkg --print-architecture)
@@ -863,9 +866,21 @@ jobs:
 
           mkdir -p "${PKG_DIR}/DEBIAN"
           mkdir -p "${PKG_DIR}/usr/lib/${MULTIARCH}/gstreamer-1.0"
+          mkdir -p "${PKG_DIR}/usr/share/doc/${PKG_NAME}"
 
           patchelf --remove-rpath plugin/libgstprojectm.so
           cp plugin/libgstprojectm.so "${PKG_DIR}/usr/lib/${MULTIARCH}/gstreamer-1.0/"
+
+          {
+            printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
+            printf 'Upstream-Name: gst-projectm\n'
+            printf 'Upstream-Contact: https://github.com/projectM-visualizer/gst-projectm\n'
+            printf 'Source: https://github.com/projectM-visualizer/gst-projectm\n'
+            printf '\n'
+            printf 'Files: *\n'
+            printf 'Copyright: projectM Visualizer contributors\n'
+            printf 'License: LGPL-2.1+\n'
+          } > "${PKG_DIR}/usr/share/doc/${PKG_NAME}/copyright"
 
           CONFLICTS="gstreamer1.0-projectm-static-gl, gstreamer1.0-projectm-static-gles, gstreamer1.0-projectm-dynamic"
 
@@ -882,7 +897,7 @@ jobs:
 
           {
             printf 'Package: %s\n' "${PKG_NAME}"
-            printf 'Version: %s\n' "${VERSION}"
+            printf 'Version: %s\n' "${DEB_VERSION}"
             printf 'Section: libs\n'
             printf 'Priority: optional\n'
             printf 'Architecture: %s\n' "${ARCH}"
@@ -930,6 +945,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//.}"
+          RPM_VERSION="${VERSION//-/\~}"
           VARIANT="${{ matrix.variant }}"
           LIBDIR=$(rpm --eval '%{_libdir}')
 
@@ -956,7 +972,7 @@ jobs:
 
           cat > ~/rpmbuild/SPECS/gst-projectm.spec << SPECEOF
           Name:           ${RPMNAME}
-          Version:        ${VERSION}
+          Version:        ${RPM_VERSION}
           Release:        1%{?dist}
           Summary:        ${SUMMARY}
           License:        LGPLv2+
@@ -981,7 +997,7 @@ jobs:
           ${LIBDIR}/gstreamer-1.0/libgstprojectm.so
 
           %changelog
-          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${RPM_VERSION}-1
           - Release ${VERSION}
           SPECEOF
 
