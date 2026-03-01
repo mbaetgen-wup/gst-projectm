@@ -713,7 +713,7 @@ jobs:
           Summary:        GStreamer projectM plugin (static, self-contained)
           License:        LGPLv2+
           URL:            https://github.com/projectM-visualizer/gst-projectm
-          Source0:        gst-projectm-static-%{version}.tar.gz
+          Source0:        gst-projectm-static-${VERSION}.tar.gz
 
           %global debug_package %{nil}
           %{!?enable_gles: %global enable_gles OFF}
@@ -735,7 +735,7 @@ jobs:
           statically linked. No external projectM libraries required.
 
           %prep
-          %setup -q -n gst-projectm-static-%{version}
+          %setup -q -n gst-projectm-static-${VERSION}
 
           %build
           cp -a vendor/projectm /tmp/projectm-src
@@ -778,7 +778,7 @@ jobs:
           Summary:        GStreamer projectM plugin (dynamic linking)
           License:        LGPLv2+
           URL:            https://github.com/projectM-visualizer/gst-projectm
-          Source0:        gst-projectm-dynamic-%{version}.tar.gz
+          Source0:        gst-projectm-dynamic-${VERSION}.tar.gz
 
           %global debug_package %{nil}
 
@@ -794,7 +794,7 @@ jobs:
           Install projectM (>= 4.1.0) separately.
 
           %prep
-          %setup -q -n gst-projectm-dynamic-%{version}
+          %setup -q -n gst-projectm-dynamic-${VERSION}
 
           %build
           rsync -a --exclude=.git . /tmp/gst-projectm-src/
