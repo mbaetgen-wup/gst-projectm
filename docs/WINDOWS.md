@@ -1,81 +1,76 @@
-## Building on Windows
+# Windows
 
-### Prerequisites
+For plugin properties and presets/textures, see the [main README](../README.md).
 
-* [Git](https://git-scm.com/download/win)
-* [Visual Studio 2017](https://www.visualstudio.com/downloads/) (Community edition is fine)
-* [Vcpkg](https://github.com/Microsoft/vcpkg)
-* [CMake](https://cmake.org/download/) (3.8 or higher)
-* [GStreamer](https://gstreamer.freedesktop.org/download/) (1.16 or higher)
-* [ProjectM](https://github.com/projectM-visualizer/projectm) (4.0 or higher)
+## Installing Pre-built Packages
 
-### Building
+Download the `.zip` for your preferred variant from [GitHub Releases](https://github.com/projectM-visualizer/gst-projectm/releases):
 
-1. Download (or clone, if git installed) the repository
+- **static-gl** — desktop OpenGL (recommended)
+- **static-gles** — OpenGL ES
+- **dynamic** — requires [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.1.0) installed separately
 
-```
-git clone https://github.com/projectM-visualizer/gst-projectm.git
-``` 
-
-2. Set Environment Variables
-
-- PROJECTM_ROOT - Path to built projectM directory
-- VCPKG_ROOT - Path to vcpkg installtion directory
+Extract `gstprojectm.dll` and copy it to your GStreamer plugins directory:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("PROJECTM_ROOT", YOUR_PATH_HERE, "User")
-[Environment]::SetEnvironmentVariable("VCPKG_ROOT", YOUR_PATH_HERE, "User")
+# User-local plugins directory:
+Copy-Item gstprojectm.dll "$Env:USERPROFILE\.gstreamer\1.0\plugins\"
+
+# — or — System GStreamer installation:
+Copy-Item gstprojectm.dll "C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0\"
 ```
 
-3. Run build script
-
-```powershell
-.\build.ps1
-
-.\build.ps1 --auto # Skips prompts by using default options
-```
-
-### Installing
-
-#### Automatic
-
-The build script will ask if you want to install the plugin.
-
-#### Manual
-
-1. Create GStreamer plugins directory.
-
-```powershell
-New-Item -Path "$Env:USERPROFILE\.gstreamer\1.0\plugins" -ItemType Directory | Out-Null
-```
-
-2. Copy the built plugin to the plugins directory.
-
-```powershell
-Copy-Item -Path "dist\gstprojectm.dll" -Destination "$Env:USERPROFILE\.gstreamer\1.0\plugins\gstprojectm.dll" -Force
-```
-
-3. Set GST_PLUGIN_PATH environment variable to the plugins directory.
+Optionally set `GST_PLUGIN_PATH` so GStreamer always finds the plugin:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("GST_PLUGIN_PATH", "$Env:USERPROFILE\.gstreamer\1.0\plugins", "User")
 ```
 
-### Using
-
-To utilize the plugin with the example, please install GStreamer
+### Verify
 
 ```powershell
-gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false
+gst-inspect-1.0 projectm
 ```
 
-### Testing
+## Building from Source
+
+### Prerequisites
+
+* Git, CMake (>= 3.8)
+* [Visual Studio 2017+](https://www.visualstudio.com/downloads/) (Community edition is fine)
+* [Vcpkg](https://github.com/Microsoft/vcpkg)
+* [GStreamer](https://gstreamer.freedesktop.org/download/) (>= 1.16)
+* [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.0)
+
+### Build
 
 ```powershell
-./test.ps1 --inspect # Inspect the plugin
-./test.ps1 --audio # Test the plugin with audio
-./test.ps1 --preset # Test the plugin with a preset
-./test.ps1 --properties # Test the plugin with properties
-./test.ps1 --output-video # Test the plugin with video output (video only)
-./test.ps1 --encode-output-video # Test the plugin with encoded video output (audio/video)
+git clone https://github.com/projectM-visualizer/gst-projectm.git
+cd gst-projectm
+
+[Environment]::SetEnvironmentVariable("PROJECTM_ROOT", "C:\path\to\projectm", "User")
+[Environment]::SetEnvironmentVariable("VCPKG_ROOT", "C:\path\to\vcpkg", "User")
+
+.\build.ps1 --auto
+```
+
+### Install
+
+The build script offers to install automatically. To install manually:
+
+```powershell
+New-Item -Path "$Env:USERPROFILE\.gstreamer\1.0\plugins" -ItemType Directory -Force | Out-Null
+Copy-Item "dist\gstprojectm.dll" "$Env:USERPROFILE\.gstreamer\1.0\plugins\" -Force
+[Environment]::SetEnvironmentVariable("GST_PLUGIN_PATH", "$Env:USERPROFILE\.gstreamer\1.0\plugins", "User")
+```
+
+### Test
+
+```powershell
+./test.ps1 --inspect               # Inspect the plugin
+./test.ps1 --audio                 # Test with audio
+./test.ps1 --preset                # Test with a preset
+./test.ps1 --properties            # Test with properties
+./test.ps1 --output-video          # Test with video output
+./test.ps1 --encode-output-video   # Test with encoded video output
 ```

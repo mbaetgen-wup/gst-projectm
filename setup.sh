@@ -20,9 +20,16 @@ install_packages() {
                 sudo apt install "${PACKAGE_LIST[@]}"
             fi
         ;;
+        dnf)
+            if [ $AUTO = true ]; then
+                sudo dnf install -y "${PACKAGE_LIST[@]}"
+            else
+                sudo dnf install "${PACKAGE_LIST[@]}"
+            fi
+        ;;
         pacman)
             sudo pacman -Syyu
-            
+
             if [ $AUTO = true ]; then
                 sudo pacman -Sy "${PACKAGE_LIST[@]}"
             else
@@ -31,7 +38,7 @@ install_packages() {
         ;;
         brew)
             brew update
-            
+
             if [ $AUTO = true ]; then
                 brew install "${PACKAGE_LIST[@]}" || true
             else
@@ -44,7 +51,7 @@ install_packages() {
 # Prompt user to install dependencies, (and choose a package manager, if multiple are available)
 prompt_install_dependencies() {
     local AUTO=$1
-    
+
     if [ $AUTO = false ]; then
         echo
         echo -n "Install dependencies? (Y/n): "
@@ -52,11 +59,11 @@ prompt_install_dependencies() {
     else
         INSTALL_DEPS="Y"
     fi
-    
+
     if [[ "$INSTALL_DEPS" != "N" && "$INSTALL_DEPS" != "n" ]]; then
         # Check for available package managers
         AVAILABLE_PACKAGE_MANAGERS=()
-        
+
         if [ "$(uname)" == "Darwin" ]; then
             if command -v brew &>/dev/null; then
                 AVAILABLE_PACKAGE_MANAGERS+=("brew")
@@ -65,16 +72,16 @@ prompt_install_dependencies() {
             if command -v apt &>/dev/null; then
                 AVAILABLE_PACKAGE_MANAGERS+=("apt")
             fi
-            
+
+            if command -v dnf &>/dev/null; then
+                AVAILABLE_PACKAGE_MANAGERS+=("dnf")
+            fi
+
             if command -v pacman &>/dev/null; then
                 AVAILABLE_PACKAGE_MANAGERS+=("pacman")
             fi
-
-            # if command -v yum &>/dev/null; then
-            #     AVAILABLE_PACKAGE_MANAGERS+=("yum")
-            # fi
         fi
-        
+
         # Prompt user to choose a package manager
         if [ ${#AVAILABLE_PACKAGE_MANAGERS[@]} -eq 0 ]; then
             echo "No supported package managers found."
@@ -91,11 +98,15 @@ prompt_install_dependencies() {
                 fi
             done
         fi
-        
+
         # Install packages based on the selected package manager
         case $SELECTED_PACKAGE_MANAGER in
             apt)
                 PACKAGE_LIST=("git" "cmake" "ninja-build" "pkg-config" "build-essential" "libgl1-mesa-dev" "mesa-common-dev" "libgstreamer1.0-dev" "libgstreamer-gl1.0-0" "libgstreamer-plugins-base1.0-dev" "gstreamer1.0-tools" "gstreamer1.0-libav" "libunwind-dev")
+                install_packages $AUTO "$SELECTED_PACKAGE_MANAGER" PACKAGE_LIST[@]
+            ;;
+            dnf)
+                PACKAGE_LIST=("git" "cmake" "ninja-build" "gcc" "gcc-c++" "pkgconfig" "mesa-libGL-devel" "mesa-libEGL-devel" "mesa-libGLES-devel" "gstreamer1-devel" "gstreamer1-plugins-base-devel" "glib2-devel")
                 install_packages $AUTO "$SELECTED_PACKAGE_MANAGER" PACKAGE_LIST[@]
             ;;
             pacman)

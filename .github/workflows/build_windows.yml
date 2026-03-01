@@ -2,27 +2,44 @@ name: Windows (x64)
 
 on:
   push:
-      branches: 
-        - "*"
-      tags:
-        - "*"
-    
+    branches:
+      - "*"
+    tags:
+      - "*"
+
   pull_request:
-      branches: 
-        - "*"
+    branches:
+      - "*"
+
+env:
+  PROJECTM_REF: master
 
 jobs:
   build-projectm:
-    name: Build ProjectM
+    name: Build ProjectM (${{ matrix.variant }})
     runs-on: windows-latest
-
+    strategy:
+      matrix:
+        include:
+          - variant: static-gl
+            shared: "OFF"
+            enable_gles: "OFF"
+            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+          - variant: static-gles
+            shared: "OFF"
+            enable_gles: "ON"
+            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+          - variant: shared
+            shared: "ON"
+            enable_gles: "OFF"
+            extra_flags: ""
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-    
     steps:
       - uses: actions/checkout@v4
         with:
           repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
           submodules: 'recursive'
 
       - name: Export GitHub Actions cache environment variables
@@ -32,92 +49,189 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      - name: Get ProjectM Git Hash
+      - name: Get Hash
         id: git-hash
-        run: echo "hash=$(git rev-parse HEAD)v2" >> $Env:GITHUB_OUTPUT
+        run: echo "hash=$(git rev-parse HEAD)-${{ matrix.variant }}v4" >> $Env:GITHUB_OUTPUT
+
+      - name: Save ProjectM Version Info (static only)
+        if: startsWith(matrix.variant, 'static')
+        shell: bash
+        run: |
+          mkdir -p "${{ github.workspace }}/install"
+          echo "PROJECTM_VENDOR_REF=${{ env.PROJECTM_REF }}" > "${{ github.workspace }}/install/projectm-version"
+          echo "PROJECTM_VENDOR_COMMIT=$(git rev-parse --short HEAD)" >> "${{ github.workspace }}/install/projectm-version"
+          echo "PROJECTM_VENDOR_TIMESTAMP=$(git log -1 --format=%cI)" >> "${{ github.workspace }}/install/projectm-version"
 
       - name: Cache Install
         id: cache-install
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ github.workspace }}/install
+          path: ${{ github.workspace }}/install
           key: install-${{ runner.os }}-projectm-${{ steps.git-hash.outputs.hash }}
 
-      - name: Configure Build
-        run: cmake -G "Visual Studio 17 2022" -A "X64" -S "${{ github.workspace }}" -B "${{ github.workspace }}/cmake-build" -DCMAKE_TOOLCHAIN_FILE="${Env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" -DCMAKE_VERBOSE_MAKEFILE=YES -DBUILD_SHARED_LIBS=ON -DENABLE_PLAYLIST=ON
+      - name: Build & Install
         if: steps.cache-install.outputs.cache-hit != 'true'
-
-      - name: Build Release
-        run: cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --parallel
-        if: steps.cache-install.outputs.cache-hit != 'true'
-
-      - name: Install
         run: |
+          cmake -G "Visual Studio 17 2022" -A "X64" -S "${{ github.workspace }}" -B "${{ github.workspace }}/cmake-build" -DCMAKE_TOOLCHAIN_FILE="${Env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" -DCMAKE_VERBOSE_MAKEFILE=YES -DBUILD_SHARED_LIBS=${{ matrix.shared }} -DENABLE_PLAYLIST=ON -DENABLE_GLES=${{ matrix.enable_gles }} ${{ matrix.extra_flags }}
+          cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --parallel
           cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --target install
-        if: steps.cache-install.outputs.cache-hit != 'true'
-          
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+
+      - uses: actions/upload-artifact@v4
         with:
-            name: projectm-windows-shared-latest
-            path: install/*
+          name: projectm-windows-${{ matrix.variant }}-latest
+          path: install/*
 
   build-plugin:
-    name: Build GST Plugin ProjectM
+    name: Build GST Plugin (${{ matrix.variant }})
+    needs: [build-projectm]
     runs-on: windows-latest
-
+    strategy:
+      matrix:
+        include:
+          - variant: static-gl
+            projectm_artifact: projectm-windows-static-gl-latest
+          - variant: static-gles
+            projectm_artifact: projectm-windows-static-gles-latest
+          - variant: dynamic
+            projectm_artifact: projectm-windows-shared-latest
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
 
-      - name: Wait for ProjectM
-        uses: yogeshlonkar/wait-for-jobs@v0
+      - uses: actions/download-artifact@v4
         with:
-          interval: '5000'
-          jobs: Build ProjectM
-          ttl: '15'
-
-      - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Download Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: projectm-windows-shared-latest
+          name: ${{ matrix.projectm_artifact }}
           path: artifacts
 
+      - name: Patch projectM4 CMake config (GLES workaround)
+        if: matrix.variant == 'static-gles'
+        shell: bash
+        run: |
+          CONFIG_FILE="artifacts/lib/cmake/projectM4/projectM4Config.cmake"
+          if [ -f "${CONFIG_FILE}" ]; then
+            sed -i '/find_dependency(OpenGL/d' "${CONFIG_FILE}"
+            echo "Patched: removed find_dependency(OpenGL) from projectM4Config.cmake"
+          fi
+
+      - name: Read ProjectM Version Info (static only)
+        if: startsWith(matrix.variant, 'static')
+        id: projectm-version
+        shell: bash
+        run: |
+          if [ -f artifacts/projectm-version ]; then
+            cat artifacts/projectm-version >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine plugin version
+        id: plugin-version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
       - name: Configure Build
-        run: cmake -G "Visual Studio 17 2022" -A "X64" -S "${{ github.workspace }}" -B "${{ github.workspace }}/cmake-build" -DCMAKE_TOOLCHAIN_FILE="${Env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>" -DCMAKE_VERBOSE_MAKEFILE=YES -DprojectM4_DIR="artifacts/lib/cmake/projectM4"
+        run: |
+          $vendorFlags = ""
+          if ("${{ matrix.variant }}".StartsWith("static") -and "${{ steps.projectm-version.outputs.PROJECTM_VENDOR_REF }}" -ne "") {
+            $glVariant = "${{ matrix.variant }}" -replace "^static-", ""
+            $vendorFlags = "-DPROJECTM_VENDOR_REF=${{ steps.projectm-version.outputs.PROJECTM_VENDOR_REF }} -DPROJECTM_VENDOR_COMMIT=${{ steps.projectm-version.outputs.PROJECTM_VENDOR_COMMIT }} -DPROJECTM_VENDOR_TIMESTAMP=${{ steps.projectm-version.outputs.PROJECTM_VENDOR_TIMESTAMP }} -DPROJECTM_VENDOR_GL_VARIANT=$glVariant"
+          }
+          $cmd = "cmake -G `"Visual Studio 17 2022`" -A `"X64`" -S `"${{ github.workspace }}`" -B `"${{ github.workspace }}/cmake-build`" -DCMAKE_TOOLCHAIN_FILE=`"${Env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake`" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_MSVC_RUNTIME_LIBRARY=`"MultiThreaded`$<`$<CONFIG:Debug>:Debug>DLL`" -DCMAKE_VERBOSE_MAKEFILE=YES -DprojectM4_DIR=`"artifacts/lib/cmake/projectM4`" -DGSTPROJECTM_VERSION=`"${{ steps.plugin-version.outputs.version }}`" $vendorFlags"
+          Invoke-Expression $cmd
         env:
           projectM4Playlist_DIR: "${{ github.workspace }}/artifacts/lib/cmake/projectM4Playlist"
 
       - name: Build Release
-        id: build
         run: cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --parallel
 
-      # - name: Install Chocolatey
-      #   uses: crazy-max/ghaction-chocolatey@v3
-      #   with:
-      #     args: install gstreamer --no-progress
-      #   if: steps.build.outputs.return-code == 0
-
-      # - name: Test
-      #   run: |
-      #     set GST_PLUGIN_PATH="${{ github.workspace }}/cmake-build/Release"
-      #     gst-inspect-1.0 projectm
-      #   if: steps.build.outputs.return-code == 0
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-            name: gst-projectm-windows-latest
-            path: ${{ github.workspace }}\cmake-build\Release\*.dll
+          name: gst-projectm-windows-${{ matrix.variant }}-latest
+          path: ${{ github.workspace }}\cmake-build\Release\*.dll
+
+  package:
+    name: Package Windows (${{ matrix.label }})
+    needs: [build-plugin]
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - variant: static-gl
+            label: static-gl
+            plugin_artifact: gst-projectm-windows-static-gl-latest
+          - variant: static-gles
+            label: static-gles
+            plugin_artifact: gst-projectm-windows-static-gles-latest
+          - variant: dynamic
+            label: dynamic
+            plugin_artifact: gst-projectm-windows-dynamic-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.plugin_artifact }}
+          path: plugin
+
+      - name: Create Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v").Replace("/", ".")
+          $variant = "${{ matrix.variant }}"
+          $pkgDir = "gstprojectm-${version}-windows-x64-${variant}"
+          New-Item -Path $pkgDir -ItemType Directory | Out-Null
+
+          Copy-Item "plugin\gstprojectm.dll" -Destination $pkgDir
+          Copy-Item "LICENSE" -Destination $pkgDir
+
+          if ($variant -eq "static-gl") {
+            $variantDesc = "static (self-contained, projectM linked statically with desktop GL)"
+            $note = "projectM is statically linked with desktop OpenGL support. No external projectM libraries required."
+          } elseif ($variant -eq "static-gles") {
+            $variantDesc = "static (self-contained, projectM linked statically with GLES)"
+            $note = "projectM is statically linked with OpenGL ES support. No external projectM libraries required."
+          } else {
+            $variantDesc = "dynamic (requires projectM installed separately)"
+            $note = @"
+          This package does NOT include projectM libraries.
+          You must install projectM (>= 4.1.0) separately and ensure the
+          DLLs (projectM-4.dll, projectM-4-playlist.dll) are available
+          on your PATH or in the same directory as the plugin.
+          See https://github.com/projectM-visualizer/projectm
+          "@
+          }
+
+          @"
+          GStreamer projectM Plugin - Windows x64 (${variantDesc})
+          ========================================================
+          Version: ${version}
+
+          ${note}
+
+          Installation:
+          1. Install GStreamer from https://gstreamer.freedesktop.org/download/
+          2. Copy gstprojectm.dll to one of:
+             - %USERPROFILE%\.gstreamer\1.0\plugins\
+             - Your GStreamer installation's lib\gstreamer-1.0\ directory
+          3. Set GST_PLUGIN_PATH if using the user directory:
+             [Environment]::SetEnvironmentVariable("GST_PLUGIN_PATH", "%USERPROFILE%\.gstreamer\1.0\plugins", "User")
+
+          Verify: gst-inspect-1.0 projectm
+          "@ | Out-File -FilePath "$pkgDir\README.txt" -Encoding UTF8
+
+          Write-Host "Package contents:"
+          Get-ChildItem $pkgDir | ForEach-Object { Write-Host "  $($_.Name) ($([math]::Round($_.Length / 1KB)) KB)" }
+
+          Compress-Archive -Path $pkgDir -DestinationPath "$pkgDir.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64-${{ matrix.variant }}
+          path: gstprojectm-*-windows-x64-${{ matrix.variant }}.zip

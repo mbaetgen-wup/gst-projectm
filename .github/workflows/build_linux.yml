@@ -1,107 +1,994 @@
-name: Ubuntu Linux (x86_64)
+name: Linux (x86_64)
 
 on:
   push:
-      branches: 
-        - "*"
-      tags:
-        - "*"
-    
+    branches:
+      - "*"
+    tags:
+      - "*"
+
   pull_request:
-      branches: 
-        - "*"
+    branches:
+      - "*"
+
+env:
+  # ── ProjectM source configuration ──────────────────────────────────
+  # Set to a tag (e.g. v4.1.4), branch name, or commit SHA.
+  PROJECTM_REF: master
+
+  # ── Linux distribution families for binary packages ─────────────────
+  #
+  # Each family entry defines:
+  #   format         – package format (deb or rpm)
+  #   build_image    – default image for compiling
+  #   build_type     – "runner" (GitHub-hosted) or "container"
+  #   arch           – architecture label (e.g. x64, arm64)
+  #   versions       – list of release targets, each with:
+  #       artifact       – tag used in artifact / release file name
+  #       override_image – (optional) compile on this image instead of
+  #                        build_image for this specific version
+  #
+  # Both libprojectM and the plugin are compiled on each unique image
+  # (build_image or override_image) so that binaries are native to
+  # the target distro version.
+  #
+  # Source packages are distro-independent and don't use this config.
+  #
+  DISTRO_FAMILIES: >-
+    [
+      {
+        "format": "deb",
+        "build_image": "ubuntu-22.04",
+        "build_type": "runner",
+        "arch": "x64",
+        "versions": [
+          { "artifact": "ubuntu2204" },
+          { "artifact": "ubuntu2404", "override_image": "ubuntu-24.04" }
+        ]
+      },
+      {
+        "format": "rpm",
+        "build_image": "fedora:40",
+        "build_type": "container",
+        "arch": "x64",
+        "versions": [
+          { "artifact": "fedora40" },
+          { "artifact": "fedora41", "override_image": "fedora:41" }
+        ]
+      }
+    ]
 
 jobs:
-  build-projectm:
-    name: Build ProjectM
+  # ═══════════════════════════════════════════════════════════════════
+  #  Configuration — normalise DISTRO_FAMILIES into job matrices
+  # ═══════════════════════════════════════════════════════════════════
+
+  configure:
+    name: Configure
     runs-on: ubuntu-latest
-    
+    outputs:
+      # Unique DEB build images (GitHub-hosted runners).
+      # [ { "tag": "ubuntu2204", "runner": "ubuntu-22.04", "arch": "x64" }, ... ]
+      build_images_deb: ${{ steps.set.outputs.build_images_deb }}
+      # Unique RPM build images (containers).
+      # [ { "tag": "fedora40", "container": "fedora:40", "arch": "x64" }, ... ]
+      build_images_rpm: ${{ steps.set.outputs.build_images_rpm }}
+      # Flat packaging matrices.
+      # DEB: { "artifact", "runner", "build_tag", "arch" }
+      # RPM: { "artifact", "container", "build_tag", "arch" }
+      distros_deb: ${{ steps.set.outputs.distros_deb }}
+      distros_rpm: ${{ steps.set.outputs.distros_rpm }}
     steps:
-      - name: Checkout ProjectM
-        uses: actions/checkout@v4
+      - name: Normalize distro families
+        id: set
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os, re
+
+          families = json.loads('''${{ env.DISTRO_FAMILIES }}''')
+
+          deb_list, rpm_list = [], []
+          deb_images, rpm_images = {}, {}
+
+          def image_to_tag(img):
+              return re.sub(r'[-:.]', '', img)
+
+          for fam in families:
+              fmt        = fam["format"]
+              default_img = fam["build_image"]
+              build_type = fam["build_type"]
+              arch       = fam.get("arch", "x64")
+
+              for ver in fam["versions"]:
+                  img = ver.get("override_image", default_img)
+                  tag = image_to_tag(img)
+                  key = f"{img}-{arch}"
+
+                  entry = {"artifact": ver["artifact"], "build_tag": tag, "arch": arch}
+
+                  if fmt == "deb":
+                      entry["runner"] = img
+                      deb_list.append(entry)
+                      if key not in deb_images:
+                          deb_images[key] = {"tag": tag, "runner": img, "arch": arch}
+                  elif fmt == "rpm":
+                      entry["container"] = img
+                      rpm_list.append(entry)
+                      if key not in rpm_images:
+                          rpm_images[key] = {"tag": tag, "container": img, "arch": arch}
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for name, val in [
+                  ("build_images_deb", list(deb_images.values())),
+                  ("build_images_rpm", list(rpm_images.values())),
+                  ("distros_deb", deb_list),
+                  ("distros_rpm", rpm_list),
+              ]:
+                  out.write(f"{name}<<MATRIX_EOF\n{json.dumps(val)}\nMATRIX_EOF\n")
+
+          for name, val in [
+              ("build_images_deb", list(deb_images.values())),
+              ("build_images_rpm", list(rpm_images.values())),
+              ("distros_deb", deb_list),
+              ("distros_rpm", rpm_list),
+          ]:
+              print(f"{name}: {json.dumps(val, indent=2)}")
+          PYEOF
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Build projectM — per unique image × GL variant
+  #
+  #  Artifacts: projectm-{tag}-{arch}-static-{gl|gles}
+  #             projectm-{tag}-{arch}-shared
+  # ═══════════════════════════════════════════════════════════════════
+
+  build-projectm-deb:
+    name: Build ProjectM (${{ matrix.image.tag }}, static-${{ matrix.gl_variant }})
+    needs: [configure]
+    runs-on: ${{ matrix.image.runner }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_deb) }}
+        gl_variant: [gl, gles]
+        include:
+          - gl_variant: gl
+            enable_gles: "OFF"
+          - gl_variant: gles
+            enable_gles: "ON"
+    steps:
+      - uses: actions/checkout@v4
         with:
           repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
           submodules: 'recursive'
 
-      - name: Get ProjectM Git Hash
-        id: git-hash
-        run: echo "hash=$(git rev-parse HEAD)v2" >> $GITHUB_OUTPUT
+      - name: Get cache key
+        id: cache-key
+        run: echo "hash=$(git rev-parse HEAD)-static-${{ matrix.gl_variant }}-${{ matrix.image.tag }}-${{ matrix.image.arch }}v1" >> $GITHUB_OUTPUT
 
       - name: Cache Install
         id: cache-install
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ github.workspace }}/install
-          key: install-${{ runner.os }}-projectm-${{ steps.git-hash.outputs.hash }}
+          path: ${{ github.workspace }}/install
+          key: install-projectm-${{ steps.cache-key.outputs.hash }}
+
+      - name: Save ProjectM Version Info
+        run: |
+          mkdir -p ${{ github.workspace }}/install
+          echo "PROJECTM_VENDOR_REF=${{ env.PROJECTM_REF }}" > ${{ github.workspace }}/install/projectm-version
+          echo "PROJECTM_VENDOR_COMMIT=$(git rev-parse --short HEAD)" >> ${{ github.workspace }}/install/projectm-version
+          echo "PROJECTM_VENDOR_TIMESTAMP=$(git log -1 --format=%cI)" >> ${{ github.workspace }}/install/projectm-version
 
       - name: Install Packages
+        if: steps.cache-install.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev mesa-common-dev libgles-dev libsdl2-dev libglm-dev llvm-dev libgtest-dev ninja-build
+
+      - name: Build & Install
+        if: steps.cache-install.outputs.cache-hit != 'true'
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_PLAYLIST=ON \
+            -DENABLE_GLES=${{ matrix.enable_gles }} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build build --config Release --parallel
+          cmake --build build --config Release --target install
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-static-${{ matrix.gl_variant }}
+          path: install/
+          if-no-files-found: error
+
+  build-projectm-rpm:
+    name: Build ProjectM (${{ matrix.image.tag }}, static-${{ matrix.gl_variant }})
+    needs: [configure]
+    if: ${{ needs.configure.outputs.build_images_rpm != '[]' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image.container }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_rpm) }}
+        gl_variant: [gl, gles]
+        include:
+          - gl_variant: gl
+            enable_gles: "OFF"
+          - gl_variant: gles
+            enable_gles: "ON"
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y git cmake ninja-build gcc gcc-c++ pkgconfig mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel libglvnd-devel SDL2-devel glm-devel llvm-devel gtest-devel
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+
+      - name: Save ProjectM Version Info
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/install"
+          echo "PROJECTM_VENDOR_REF=${{ env.PROJECTM_REF }}" > "${GITHUB_WORKSPACE}/install/projectm-version"
+          echo "PROJECTM_VENDOR_COMMIT=$(git rev-parse --short HEAD)" >> "${GITHUB_WORKSPACE}/install/projectm-version"
+          echo "PROJECTM_VENDOR_TIMESTAMP=$(git log -1 --format=%cI)" >> "${GITHUB_WORKSPACE}/install/projectm-version"
+
+      - name: Build & Install
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_PLAYLIST=ON \
+            -DENABLE_GLES=${{ matrix.enable_gles }} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build build --config Release --parallel
+          cmake --build build --config Release --target install
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-static-${{ matrix.gl_variant }}
+          path: install/
+          if-no-files-found: error
+
+  build-projectm-shared-deb:
+    name: Build ProjectM (shared, ${{ matrix.image.tag }})
+    needs: [configure]
+    runs-on: ${{ matrix.image.runner }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_deb) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+
+      - name: Get cache key
+        id: cache-key
+        run: echo "hash=$(git rev-parse HEAD)-shared-${{ matrix.image.tag }}-${{ matrix.image.arch }}v1" >> $GITHUB_OUTPUT
+
+      - name: Cache Install
+        id: cache-install
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/install
+          key: install-projectm-${{ steps.cache-key.outputs.hash }}
+
+      - name: Install Packages
+        if: steps.cache-install.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev mesa-common-dev libsdl2-dev libglm-dev llvm-dev libgtest-dev ninja-build
-        if: steps.cache-install.outputs.cache-hit != 'true'
 
-      - name: Configure Build
-        run: cmake -G "Ninja" -S "${{ github.workspace }}" -B "${{ github.workspace }}/cmake-build" -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" -DCMAKE_VERBOSE_MAKEFILE=YES -DBUILD_SHARED_LIBS=ON -DENABLE_PLAYLIST=ON
+      - name: Build & Install
         if: steps.cache-install.outputs.cache-hit != 'true'
-
-      - name: Build Release
-        run: cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --parallel
-        if: steps.cache-install.outputs.cache-hit != 'true'
-
-      - name: Install
         run: |
-          cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --target install
-        if: steps.cache-install.outputs.cache-hit != 'true'
-          
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DBUILD_SHARED_LIBS=ON \
+            -DENABLE_PLAYLIST=ON
+          cmake --build build --config Release --parallel
+          cmake --build build --config Release --target install
+
+      - uses: actions/upload-artifact@v4
         with:
-            name: projectm-linux-shared-latest
-            path: install/*
+          name: projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-shared
+          path: install/
+          if-no-files-found: error
 
-  build-plugin:
-    name: Build GST Plugin ProjectM
+  build-projectm-shared-rpm:
+    name: Build ProjectM (shared, ${{ matrix.image.tag }})
+    needs: [configure]
+    if: ${{ needs.configure.outputs.build_images_rpm != '[]' }}
     runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image.container }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_rpm) }}
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y git cmake ninja-build gcc gcc-c++ pkgconfig mesa-libGL-devel mesa-libEGL-devel libglvnd-devel SDL2-devel glm-devel llvm-devel gtest-devel
 
+      - uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+
+      - name: Build & Install
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/install" \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DBUILD_SHARED_LIBS=ON \
+            -DENABLE_PLAYLIST=ON
+          cmake --build build --config Release --parallel
+          cmake --build build --config Release --target install
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-shared
+          path: install/
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Build plugin — per unique image × variant
+  #
+  #  Artifacts: gst-projectm-{tag}-{arch}-{variant}
+  # ═══════════════════════════════════════════════════════════════════
+
+  build-plugin-deb:
+    name: Build Plugin (${{ matrix.image.tag }}, ${{ matrix.variant }})
+    needs: [configure, build-projectm-deb, build-projectm-shared-deb]
+    runs-on: ${{ matrix.image.runner }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_deb) }}
+        variant: [static-gl, static-gles, dynamic]
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
 
-      - name: Wait for ProjectM
-        uses: yogeshlonkar/wait-for-jobs@v0
-        with:
-          interval: '5000'
-          jobs: Build ProjectM
-          ttl: '15'
+      - name: Resolve projectM artifact name
+        id: resolve
+        run: |
+          VARIANT="${{ matrix.variant }}"
+          TAG="${{ matrix.image.tag }}"
+          ARCH="${{ matrix.image.arch }}"
+          if [[ "${VARIANT}" == static-* ]]; then
+            GL="${VARIANT#static-}"
+            echo "projectm_artifact=projectm-${TAG}-${ARCH}-static-${GL}" >> $GITHUB_OUTPUT
+          else
+            echo "projectm_artifact=projectm-${TAG}-${ARCH}-shared" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Download Artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: projectm-linux-shared-latest
+          name: ${{ steps.resolve.outputs.projectm_artifact }}
           path: artifacts
 
       - name: Install Packages
+        run: ./setup.sh --auto
+
+      - name: Determine plugin version
+        id: plugin-version
         run: |
-          ./setup.sh --auto
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Configure Build
-        run: cmake -G "Ninja" -S "${{ github.workspace }}" -B "${{ github.workspace }}/cmake-build" -DCMAKE_VERBOSE_MAKEFILE=YES -DprojectM4_DIR="artifacts/lib/cmake/projectM4"
-        env:
-          projectM4Playlist_DIR: "${{ github.workspace }}/artifacts/lib/cmake/projectM4Playlist"
+      - name: Build
+        run: |
+          VENDOR_FLAGS=""
+          if [[ "${{ matrix.variant }}" == static-* ]] && [ -f artifacts/projectm-version ]; then
+            source artifacts/projectm-version
+            GL_VARIANT="${{ matrix.variant }}"
+            GL_VARIANT="${GL_VARIANT#static-}"
+            VENDOR_FLAGS="-DPROJECTM_VENDOR_REF=${PROJECTM_VENDOR_REF} -DPROJECTM_VENDOR_COMMIT=${PROJECTM_VENDOR_COMMIT} -DPROJECTM_VENDOR_TIMESTAMP=${PROJECTM_VENDOR_TIMESTAMP} -DPROJECTM_VENDOR_GL_VARIANT=${GL_VARIANT}"
+          fi
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DCMAKE_PREFIX_PATH="artifacts" \
+            -DGSTPROJECTM_VERSION="${{ steps.plugin-version.outputs.version }}" \
+            ${VENDOR_FLAGS}
+          cmake --build build --config Release --parallel
 
-      - name: Build Release
-        id: build
-        run: cmake --build "${{ github.workspace }}/cmake-build" --config "Release" --parallel
+      - name: Verify no projectM rpath (static)
+        if: startsWith(matrix.variant, 'static')
+        run: |
+          ldd build/libgstprojectm.so | grep -i projectm && echo "ERROR: dynamic projectM dep found in static build" && exit 1 || echo "OK: no projectM shared dep"
 
       - name: Test
         run: |
-          GST_PLUGIN_PATH="${{ github.workspace }}/cmake-build" gst-inspect-1.0 projectm
-        if: steps.build.outputs.return-code == 0
+          if [[ "${{ matrix.variant }}" == static-* ]]; then
+            GST_PLUGIN_PATH="build" gst-inspect-1.0 projectm
+          else
+            LD_LIBRARY_PATH="artifacts/lib:artifacts/lib64:$LD_LIBRARY_PATH" GST_PLUGIN_PATH="build" gst-inspect-1.0 projectm
+          fi
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Strip build rpaths
+        run: |
+          sudo apt-get install -y patchelf
+          patchelf --remove-rpath build/libgstprojectm.so
+
+      - uses: actions/upload-artifact@v4
         with:
-            name: gst-projectm-linux-latest
-            path: ${{ github.workspace }}/cmake-build/libgstprojectm.so
+          name: gst-projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-${{ matrix.variant }}
+          path: build/libgstprojectm.so
+
+  build-plugin-rpm:
+    name: Build Plugin (${{ matrix.image.tag }}, ${{ matrix.variant }})
+    needs: [configure, build-projectm-rpm, build-projectm-shared-rpm]
+    if: ${{ needs.configure.outputs.build_images_rpm != '[]' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image.container }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.build_images_rpm) }}
+        variant: [static-gl, static-gles, dynamic]
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y git cmake ninja-build gcc gcc-c++ pkgconfig patchelf mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel gstreamer1-devel gstreamer1-plugins-base-devel glib2-devel
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Fix container git ownership
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Resolve projectM artifact name
+        id: resolve
+        run: |
+          VARIANT="${{ matrix.variant }}"
+          TAG="${{ matrix.image.tag }}"
+          ARCH="${{ matrix.image.arch }}"
+          if [[ "${VARIANT}" == static-* ]]; then
+            GL="${VARIANT#static-}"
+            echo "projectm_artifact=projectm-${TAG}-${ARCH}-static-${GL}" >> $GITHUB_OUTPUT
+          else
+            echo "projectm_artifact=projectm-${TAG}-${ARCH}-shared" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.resolve.outputs.projectm_artifact }}
+          path: artifacts
+
+      - name: Determine plugin version
+        id: plugin-version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        run: |
+          VENDOR_FLAGS=""
+          if [[ "${{ matrix.variant }}" == static-* ]] && [ -f artifacts/projectm-version ]; then
+            source artifacts/projectm-version
+            GL_VARIANT="${{ matrix.variant }}"
+            GL_VARIANT="${GL_VARIANT#static-}"
+            VENDOR_FLAGS="-DPROJECTM_VENDOR_REF=${PROJECTM_VENDOR_REF} -DPROJECTM_VENDOR_COMMIT=${PROJECTM_VENDOR_COMMIT} -DPROJECTM_VENDOR_TIMESTAMP=${PROJECTM_VENDOR_TIMESTAMP} -DPROJECTM_VENDOR_GL_VARIANT=${GL_VARIANT}"
+          fi
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/artifacts" \
+            -DGSTPROJECTM_VERSION="${{ steps.plugin-version.outputs.version }}" \
+            ${VENDOR_FLAGS}
+          cmake --build build --config Release --parallel
+
+      - name: Verify no projectM rpath (static)
+        if: startsWith(matrix.variant, 'static')
+        run: |
+          ldd build/libgstprojectm.so | grep -i projectm && echo "ERROR: dynamic projectM dep found in static build" && exit 1 || echo "OK: no projectM shared dep"
+
+      - name: Strip build rpaths
+        run: patchelf --remove-rpath build/libgstprojectm.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gst-projectm-${{ matrix.image.tag }}-${{ matrix.image.arch }}-${{ matrix.variant }}
+          path: build/libgstprojectm.so
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Source packages (tag-only, distro-independent)
+  # ═══════════════════════════════════════════════════════════════════
+
+  package-deb-src:
+    name: Package DEB Source (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - variant: static
+          - variant: dynamic
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: gst-projectm
+
+      - name: Checkout ProjectM (static only)
+        if: matrix.variant == 'static'
+        uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+          path: projectm-src
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev debhelper devscripts fakeroot
+
+      - name: Create DEB Source Package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION//\//.}"
+          VARIANT="${{ matrix.variant }}"
+          PKG_NAME="gstreamer1.0-projectm-${VARIANT}"
+          SRC_DIR="${PKG_NAME}-${VERSION}"
+
+          mkdir -p "${SRC_DIR}"
+          rsync -a --exclude=build --exclude=dist --exclude=.git \
+            gst-projectm/ "${SRC_DIR}/"
+
+          if [ "${VARIANT}" = "static" ]; then
+            mkdir -p "${SRC_DIR}/vendor/projectm"
+            rsync -a --exclude=.git projectm-src/ "${SRC_DIR}/vendor/projectm/"
+          fi
+
+          mkdir -p "${SRC_DIR}/debian/source"
+
+          {
+            printf '%s (%s-1) noble; urgency=medium\n' "${PKG_NAME}" "${VERSION}"
+            printf '\n'
+            printf '  * Release %s\n' "${VERSION}"
+            printf '\n'
+            printf ' -- projectM Visualizer <projectm.visualizer@gmail.com>  %s\n' "$(date -R)"
+          } > "${SRC_DIR}/debian/changelog"
+
+          if [ "${VARIANT}" = "static" ]; then
+            {
+              printf 'Source: %s\n' "${PKG_NAME}"
+              printf 'Section: libs\n'
+              printf 'Priority: optional\n'
+              printf 'Maintainer: projectM Visualizer <projectm.visualizer@gmail.com>\n'
+              printf 'Build-Depends: debhelper-compat (= 13), cmake (>= 3.21), ninja-build, rsync, pkg-config, libgl1-mesa-dev, libgles-dev, mesa-common-dev, libgstreamer1.0-dev (>= 1.20), libgstreamer-plugins-base1.0-dev (>= 1.20)\n'
+              printf 'Standards-Version: 4.6.2\n'
+              printf 'Homepage: https://github.com/projectM-visualizer/gst-projectm\n'
+              printf '\n'
+              printf 'Package: %s\n' "${PKG_NAME}"
+              printf 'Architecture: any\n'
+              printf 'Depends: ${shlibs:Depends}, ${misc:Depends}, gstreamer1.0-plugins-base (>= 1.20), libgstreamer-gl1.0-0 (>= 1.20)\n'
+              printf 'Conflicts: gstreamer1.0-projectm-dynamic\n'
+              printf 'Replaces: gstreamer1.0-projectm-dynamic\n'
+              printf 'Description: GStreamer plugin for projectM visualization (static)\n'
+              printf ' GStreamer plugin for projectM audio visualization with projectM\n'
+              printf ' statically linked. No external projectM libraries required.\n'
+              printf ' .\n'
+              printf ' Build with ENABLE_GLES=ON for OpenGL ES or ENABLE_GLES=OFF (default)\n'
+              printf ' for desktop OpenGL. Pass via: dpkg-buildpackage -eENABLE_GLES=ON\n'
+            } > "${SRC_DIR}/debian/control"
+          else
+            {
+              printf 'Source: %s\n' "${PKG_NAME}"
+              printf 'Section: libs\n'
+              printf 'Priority: optional\n'
+              printf 'Maintainer: projectM Visualizer <projectm.visualizer@gmail.com>\n'
+              printf 'Build-Depends: debhelper-compat (= 13), cmake (>= 3.21), ninja-build, rsync, pkg-config, libgl1-mesa-dev, mesa-common-dev, libgstreamer1.0-dev (>= 1.20), libgstreamer-plugins-base1.0-dev (>= 1.20)\n'
+              printf 'Standards-Version: 4.6.2\n'
+              printf 'Homepage: https://github.com/projectM-visualizer/gst-projectm\n'
+              printf '\n'
+              printf 'Package: %s\n' "${PKG_NAME}"
+              printf 'Architecture: any\n'
+              printf 'Depends: ${shlibs:Depends}, ${misc:Depends}, gstreamer1.0-plugins-base (>= 1.20), libgstreamer-gl1.0-0 (>= 1.20)\n'
+              printf 'Conflicts: gstreamer1.0-projectm-static\n'
+              printf 'Replaces: gstreamer1.0-projectm-static\n'
+              printf 'Description: GStreamer plugin for projectM visualization (dynamic)\n'
+              printf ' GStreamer plugin for projectM audio visualization.\n'
+              printf ' .\n'
+              printf ' This package does NOT include or depend on projectM libraries.\n'
+              printf ' You must install projectM (>= 4.1.0) separately and ensure the\n'
+              printf ' shared libraries are available at runtime.\n'
+              printf ' See https://github.com/projectM-visualizer/projectm\n'
+            } > "${SRC_DIR}/debian/control"
+          fi
+
+          if [ "${VARIANT}" = "static" ]; then
+            PROJECTM_COMMIT_SHORT=$(git -C projectm-src rev-parse --short HEAD)
+            PROJECTM_TIMESTAMP=$(git -C projectm-src log -1 --format=%cI)
+            printf '#!/usr/bin/make -f\n%%:\n\tdh $@\n\nPROJECTM_VENDOR_REF := %s\nPROJECTM_VENDOR_COMMIT := %s\nPROJECTM_VENDOR_TIMESTAMP := %s\n\nENABLE_GLES ?= OFF\n\nifeq ($$(ENABLE_GLES),ON)\nPROJECTM_VENDOR_GL_VARIANT := gles\nelse\nPROJECTM_VENDOR_GL_VARIANT := gl\nendif\n\noverride_dh_auto_configure:\n\tcp -a vendor/projectm /tmp/projectm-src\n\tcmake -G Ninja -S /tmp/projectm-src -B /tmp/projectm-build \\\n\t\t-DCMAKE_BUILD_TYPE=Release \\\n\t\t-DCMAKE_INSTALL_PREFIX=/tmp/projectm-install \\\n\t\t-DBUILD_SHARED_LIBS=OFF \\\n\t\t-DENABLE_PLAYLIST=ON \\\n\t\t-DENABLE_GLES=$$(ENABLE_GLES) \\\n\t\t-DCMAKE_POSITION_INDEPENDENT_CODE=ON \\\n\t\t-DBUILD_TESTING=OFF\n\tcmake --build /tmp/projectm-build --parallel\n\tcmake --install /tmp/projectm-build\n\trsync -a --exclude=vendor --exclude=debian --exclude=.git . /tmp/gst-projectm-src/\n\tcmake -G Ninja -S /tmp/gst-projectm-src -B /tmp/gst-projectm-build \\\n\t\t-DCMAKE_BUILD_TYPE=Release \\\n\t\t-DCMAKE_PREFIX_PATH=/tmp/projectm-install \\\n\t\t-DGSTPROJECTM_VERSION=%s \\\n\t\t-DPROJECTM_VENDOR_REF=$$(PROJECTM_VENDOR_REF) \\\n\t\t-DPROJECTM_VENDOR_COMMIT=$$(PROJECTM_VENDOR_COMMIT) \\\n\t\t-DPROJECTM_VENDOR_TIMESTAMP=$$(PROJECTM_VENDOR_TIMESTAMP) \\\n\t\t-DPROJECTM_VENDOR_GL_VARIANT=$$(PROJECTM_VENDOR_GL_VARIANT)\n\noverride_dh_auto_build:\n\tcmake --build /tmp/gst-projectm-build --parallel\n\noverride_dh_auto_test:\n\noverride_dh_auto_install:\n\tmkdir -p "debian/%s/usr/lib/$$(dpkg-architecture -qDEB_HOST_MULTIARCH)/gstreamer-1.0"\n\tcp /tmp/gst-projectm-build/libgstprojectm.so "debian/%s/usr/lib/$$(dpkg-architecture -qDEB_HOST_MULTIARCH)/gstreamer-1.0/"\n\noverride_dh_auto_clean:\n\tdh_auto_clean\n\trm -rf /tmp/projectm-src /tmp/projectm-build /tmp/projectm-install /tmp/gst-projectm-src /tmp/gst-projectm-build\n' \
+              "${PROJECTM_REF}" "${PROJECTM_COMMIT_SHORT}" "${PROJECTM_TIMESTAMP}" \
+              "${VERSION}" "${PKG_NAME}" "${PKG_NAME}" \
+              > "${SRC_DIR}/debian/rules"
+          else
+            printf '#!/usr/bin/make -f\n%%:\n\tdh $@\n\noverride_dh_auto_configure:\n\trsync -a --exclude=debian --exclude=.git . /tmp/gst-projectm-src/\n\tcmake -G Ninja -S /tmp/gst-projectm-src -B /tmp/gst-projectm-build \\\n\t\t-DCMAKE_BUILD_TYPE=Release \\\n\t\t-DCMAKE_PREFIX_PATH=/usr/local \\\n\t\t-DGSTPROJECTM_VERSION=%s\n\noverride_dh_auto_build:\n\tcmake --build /tmp/gst-projectm-build --parallel\n\noverride_dh_auto_test:\n\noverride_dh_auto_install:\n\tmkdir -p "debian/%s/usr/lib/$$(dpkg-architecture -qDEB_HOST_MULTIARCH)/gstreamer-1.0"\n\tcp /tmp/gst-projectm-build/libgstprojectm.so "debian/%s/usr/lib/$$(dpkg-architecture -qDEB_HOST_MULTIARCH)/gstreamer-1.0/"\n\noverride_dh_auto_clean:\n\tdh_auto_clean\n\trm -rf /tmp/gst-projectm-src /tmp/gst-projectm-build\n' "${VERSION}" "${PKG_NAME}" "${PKG_NAME}" \
+              > "${SRC_DIR}/debian/rules"
+          fi
+          chmod +x "${SRC_DIR}/debian/rules"
+
+          {
+            printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
+            printf 'Upstream-Name: gst-projectm\n'
+            printf 'Upstream-Contact: https://github.com/projectM-visualizer/gst-projectm\n'
+            printf 'Source: https://github.com/projectM-visualizer/gst-projectm\n'
+            printf '\n'
+            printf 'Files: *\n'
+            printf 'Copyright: projectM Visualizer contributors\n'
+            printf 'License: LGPL-2.1+\n'
+          } > "${SRC_DIR}/debian/copyright"
+
+          echo "3.0 (quilt)" > "${SRC_DIR}/debian/source/format"
+
+          tar czf "${PKG_NAME}_${VERSION}.orig.tar.gz" "${SRC_DIR}"
+
+          cd "${SRC_DIR}"
+          dpkg-source -b .
+          cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-deb-source-${{ matrix.variant }}
+          path: |
+            gstreamer1.0-projectm-${{ matrix.variant }}_*.dsc
+            gstreamer1.0-projectm-${{ matrix.variant }}_*.orig.tar.gz
+            gstreamer1.0-projectm-${{ matrix.variant }}_*.debian.tar.*
+
+  package-srpm:
+    name: Package Source RPM (${{ matrix.variant }})
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:40
+    strategy:
+      matrix:
+        include:
+          - variant: static
+          - variant: dynamic
+    steps:
+      - name: Install base tools
+        run: dnf install -y git rpm-build rsync
+
+      - uses: actions/checkout@v4
+        with:
+          path: gst-projectm
+
+      - name: Checkout ProjectM (static only)
+        if: matrix.variant == 'static'
+        uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+          path: projectm-src
+
+      - name: Create Source RPM
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION//\//.}"
+          VARIANT="${{ matrix.variant }}"
+
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          TARDIR="gst-projectm-${VARIANT}-${VERSION}"
+          mkdir -p "${TARDIR}"
+          rsync -a --exclude=.git gst-projectm/ "${TARDIR}/"
+
+          if [ "${VARIANT}" = "static" ]; then
+            mkdir -p "${TARDIR}/vendor/projectm"
+            rsync -a --exclude=.git projectm-src/ "${TARDIR}/vendor/projectm/"
+            PROJECTM_COMMIT_SHORT=$(git -C projectm-src rev-parse --short HEAD)
+            PROJECTM_TIMESTAMP=$(git -C projectm-src log -1 --format=%cI)
+          fi
+
+          tar czf ~/rpmbuild/SOURCES/gst-projectm-${VARIANT}-${VERSION}.tar.gz "${TARDIR}"
+
+          if [ "${VARIANT}" = "static" ]; then
+            cat > ~/rpmbuild/SPECS/gst-projectm-${VARIANT}.spec << SPECEOF
+          Name:           gstreamer1-projectm-static
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        GStreamer projectM plugin (static, self-contained)
+          License:        LGPLv2+
+          URL:            https://github.com/projectM-visualizer/gst-projectm
+          Source0:        gst-projectm-static-%{version}.tar.gz
+
+          %global debug_package %{nil}
+          %{!?enable_gles: %global enable_gles OFF}
+
+          %if "%{enable_gles}" == "ON"
+          %global gl_variant gles
+          %else
+          %global gl_variant gl
+          %endif
+
+          BuildRequires:  cmake >= 3.21, ninja-build, rsync, gcc, gcc-c++, pkgconfig
+          BuildRequires:  mesa-libGL-devel, mesa-libEGL-devel, mesa-libGLES-devel
+          BuildRequires:  gstreamer1-devel >= 1.20, gstreamer1-plugins-base-devel >= 1.20, glib2-devel
+          Requires:       gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20
+          Conflicts:      gstreamer1-projectm-dynamic
+
+          %description
+          GStreamer plugin for projectM audio visualization with projectM
+          statically linked. No external projectM libraries required.
+
+          %prep
+          %setup -q -n gst-projectm-static-%{version}
+
+          %build
+          cp -a vendor/projectm /tmp/projectm-src
+          cmake -G Ninja -S /tmp/projectm-src -B /tmp/projectm-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/projectm-install \
+            -DBUILD_SHARED_LIBS=OFF -DENABLE_PLAYLIST=ON \
+            -DENABLE_GLES=%{enable_gles} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF
+          cmake --build /tmp/projectm-build --parallel
+          cmake --install /tmp/projectm-build
+
+          rsync -a --exclude=vendor --exclude=.git . /tmp/gst-projectm-src/
+          cmake -G Ninja -S /tmp/gst-projectm-src -B /tmp/gst-projectm-build \
+            -DCMAKE_PREFIX_PATH=/tmp/projectm-install \
+            -DGSTPROJECTM_VERSION=${VERSION} \
+            -DPROJECTM_VENDOR_REF=${PROJECTM_REF} \
+            -DPROJECTM_VENDOR_COMMIT=${PROJECTM_COMMIT_SHORT} \
+            -DPROJECTM_VENDOR_TIMESTAMP=${PROJECTM_TIMESTAMP} \
+            -DPROJECTM_VENDOR_GL_VARIANT=%{gl_variant}
+          cmake --build /tmp/gst-projectm-build --parallel
+
+          %install
+          mkdir -p %{buildroot}%{_libdir}/gstreamer-1.0
+          install -m 0755 /tmp/gst-projectm-build/libgstprojectm.so %{buildroot}%{_libdir}/gstreamer-1.0/
+
+          %files
+          %license LICENSE
+          %{_libdir}/gstreamer-1.0/libgstprojectm.so
+
+          %changelog
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          - Release ${VERSION}
+          SPECEOF
+          else
+            cat > ~/rpmbuild/SPECS/gst-projectm-${VARIANT}.spec << SPECEOF
+          Name:           gstreamer1-projectm-dynamic
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        GStreamer projectM plugin (dynamic linking)
+          License:        LGPLv2+
+          URL:            https://github.com/projectM-visualizer/gst-projectm
+          Source0:        gst-projectm-dynamic-%{version}.tar.gz
+
+          %global debug_package %{nil}
+
+          BuildRequires:  cmake >= 3.21, ninja-build, rsync, gcc, gcc-c++, pkgconfig
+          BuildRequires:  mesa-libGL-devel, mesa-libEGL-devel
+          BuildRequires:  gstreamer1-devel >= 1.20, gstreamer1-plugins-base-devel >= 1.20, glib2-devel
+          Requires:       gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20
+          Conflicts:      gstreamer1-projectm-static
+
+          %description
+          GStreamer plugin for projectM audio visualization.
+          This package does NOT include projectM libraries.
+          Install projectM (>= 4.1.0) separately.
+
+          %prep
+          %setup -q -n gst-projectm-dynamic-%{version}
+
+          %build
+          rsync -a --exclude=.git . /tmp/gst-projectm-src/
+          cmake -G Ninja -S /tmp/gst-projectm-src -B /tmp/gst-projectm-build \
+            -DCMAKE_PREFIX_PATH=/usr/local \
+            -DGSTPROJECTM_VERSION=${VERSION}
+          cmake --build /tmp/gst-projectm-build --parallel
+
+          %install
+          mkdir -p %{buildroot}%{_libdir}/gstreamer-1.0
+          install -m 0755 /tmp/gst-projectm-build/libgstprojectm.so %{buildroot}%{_libdir}/gstreamer-1.0/
+
+          %files
+          %license LICENSE
+          %{_libdir}/gstreamer-1.0/libgstprojectm.so
+
+          %changelog
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          - Release ${VERSION}
+          SPECEOF
+          fi
+
+          rpmbuild -bs ~/rpmbuild/SPECS/gst-projectm-${VARIANT}.spec
+          find ~/rpmbuild/SRPMS -name "*.src.rpm" -exec cp {} . \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-srpm-${{ matrix.variant }}
+          path: "*.src.rpm"
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Binary packages — thin wrappers around pre-built plugin artifacts
+  # ═══════════════════════════════════════════════════════════════════
+
+  package-deb:
+    name: Package DEB (${{ matrix.distro.artifact }}, ${{ matrix.variant }})
+    needs: [configure, build-plugin-deb]
+    runs-on: ${{ matrix.distro.runner }}
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        distro: ${{ fromJSON(needs.configure.outputs.distros_deb) }}
+        variant: [static-gl, static-gles, dynamic]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gst-projectm-${{ matrix.distro.build_tag }}-${{ matrix.distro.arch }}-${{ matrix.variant }}
+          path: plugin
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev patchelf
+
+      - name: Create DEB Package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION//\//.}"
+          VARIANT="${{ matrix.variant }}"
+          DISTRO="${{ matrix.distro.artifact }}"
+          ARCH=$(dpkg --print-architecture)
+          MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          PKG_NAME="gstreamer1.0-projectm-${VARIANT}"
+          PKG_DIR="${PKG_NAME}_${VERSION}_${DISTRO}_${ARCH}"
+
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/lib/${MULTIARCH}/gstreamer-1.0"
+
+          patchelf --remove-rpath plugin/libgstprojectm.so
+          cp plugin/libgstprojectm.so "${PKG_DIR}/usr/lib/${MULTIARCH}/gstreamer-1.0/"
+
+          CONFLICTS="gstreamer1.0-projectm-static-gl, gstreamer1.0-projectm-static-gles, gstreamer1.0-projectm-dynamic"
+
+          if [ "${VARIANT}" = "static-gl" ]; then
+            DESC="GStreamer plugin for projectM visualization (static, desktop GL)"
+            EXTRA_DESC=' projectM is statically linked with desktop OpenGL support.\n No external projectM libraries required.'
+          elif [ "${VARIANT}" = "static-gles" ]; then
+            DESC="GStreamer plugin for projectM visualization (static, GLES)"
+            EXTRA_DESC=' projectM is statically linked with OpenGL ES support.\n No external projectM libraries required.'
+          else
+            DESC="GStreamer plugin for projectM visualization (dynamic)"
+            EXTRA_DESC=' This package does NOT include or depend on projectM libraries.\n You must install projectM (>= 4.1.0) separately.\n See https://github.com/projectM-visualizer/projectm'
+          fi
+
+          {
+            printf 'Package: %s\n' "${PKG_NAME}"
+            printf 'Version: %s\n' "${VERSION}"
+            printf 'Section: libs\n'
+            printf 'Priority: optional\n'
+            printf 'Architecture: %s\n' "${ARCH}"
+            printf 'Depends: gstreamer1.0-plugins-base (>= 1.20), libgstreamer-gl1.0-0 (>= 1.20), libgl1\n'
+            printf 'Conflicts: %s\n' "${CONFLICTS}"
+            printf 'Replaces: %s\n' "${CONFLICTS}"
+            printf 'Maintainer: projectM Visualizer <projectm.visualizer@gmail.com>\n'
+            printf 'Homepage: https://github.com/projectM-visualizer/gst-projectm\n'
+            printf 'Description: %s\n' "${DESC}"
+            printf " ${EXTRA_DESC}\n"
+          } > "${PKG_DIR}/DEBIAN/control"
+
+          find "${PKG_DIR}/usr" -type d -exec chmod 755 {} \;
+          find "${PKG_DIR}/usr" -type f -name "*.so*" -exec chmod 644 {} \;
+          dpkg-deb --build "${PKG_DIR}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-deb-${{ matrix.distro.artifact }}-${{ matrix.variant }}
+          path: "*.deb"
+
+  package-rpm:
+    name: Package RPM (${{ matrix.distro.artifact }}, ${{ matrix.variant }})
+    needs: [configure, build-plugin-rpm]
+    if: ${{ needs.configure.outputs.build_images_rpm != '[]' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.distro.container }}
+    strategy:
+      matrix:
+        distro: ${{ fromJSON(needs.configure.outputs.distros_rpm) }}
+        variant: [static-gl, static-gles, dynamic]
+    steps:
+      - name: Install base tools
+        run: dnf install -y git patchelf rpm-build
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gst-projectm-${{ matrix.distro.build_tag }}-${{ matrix.distro.arch }}-${{ matrix.variant }}
+          path: plugin
+
+      - name: Create RPM
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION//\//.}"
+          VARIANT="${{ matrix.variant }}"
+          LIBDIR=$(rpm --eval '%{_libdir}')
+
+          if [ "${VARIANT}" = "static-gl" ]; then
+            SUMMARY="GStreamer projectM plugin (static, desktop GL)"
+            RPMNAME="gstreamer1-projectm-static-gl"
+            DESCRIPTION="GStreamer plugin for projectM audio visualization with projectM\nstatically linked using desktop OpenGL. No external projectM libraries required."
+            CONFLICTS="gstreamer1-projectm-static-gles, gstreamer1-projectm-dynamic"
+          elif [ "${VARIANT}" = "static-gles" ]; then
+            SUMMARY="GStreamer projectM plugin (static, GLES)"
+            RPMNAME="gstreamer1-projectm-static-gles"
+            DESCRIPTION="GStreamer plugin for projectM audio visualization with projectM\nstatically linked using OpenGL ES. No external projectM libraries required."
+            CONFLICTS="gstreamer1-projectm-static-gl, gstreamer1-projectm-dynamic"
+          else
+            SUMMARY="GStreamer projectM plugin (dynamic linking)"
+            RPMNAME="gstreamer1-projectm-dynamic"
+            DESCRIPTION="GStreamer plugin for projectM audio visualization.\n\nThis package does NOT include or depend on projectM libraries.\nYou must install projectM (>= 4.1.0) separately.\nSee https://github.com/projectM-visualizer/projectm"
+            CONFLICTS="gstreamer1-projectm-static-gl, gstreamer1-projectm-static-gles"
+          fi
+
+          patchelf --remove-rpath plugin/libgstprojectm.so
+
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          cat > ~/rpmbuild/SPECS/gst-projectm.spec << SPECEOF
+          Name:           ${RPMNAME}
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        ${SUMMARY}
+          License:        LGPLv2+
+          URL:            https://github.com/projectM-visualizer/gst-projectm
+
+          AutoReqProv:    no
+          Requires:       gstreamer1 >= 1.20
+          Requires:       gstreamer1-plugins-base >= 1.20
+          Conflicts:      ${CONFLICTS}
+
+          %description
+          ${DESCRIPTION}
+
+          %install
+          mkdir -p %{buildroot}${LIBDIR}/gstreamer-1.0
+          install -m 0755 ${GITHUB_WORKSPACE}/plugin/libgstprojectm.so %{buildroot}${LIBDIR}/gstreamer-1.0/
+          mkdir -p %{buildroot}%{_datadir}/licenses/${RPMNAME}
+          install -m 0644 ${GITHUB_WORKSPACE}/LICENSE %{buildroot}%{_datadir}/licenses/${RPMNAME}/
+
+          %files
+          %{_datadir}/licenses/${RPMNAME}/LICENSE
+          ${LIBDIR}/gstreamer-1.0/libgstprojectm.so
+
+          %changelog
+          * $(date '+%a %b %d %Y') projectM Visualizer <projectm.visualizer@gmail.com> - ${VERSION}-1
+          - Release ${VERSION}
+          SPECEOF
+
+          rpmbuild -bb ~/rpmbuild/SPECS/gst-projectm.spec
+          find ~/rpmbuild/RPMS -name "*.rpm" -exec cp {} . \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-rpm-${{ matrix.distro.artifact }}-${{ matrix.variant }}
+          path: "*.rpm"
