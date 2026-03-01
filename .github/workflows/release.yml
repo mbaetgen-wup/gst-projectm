@@ -44,9 +44,12 @@ jobs:
                 per_page: 100,
               });
 
+              // Pick the most recent run per workflow name (highest run_number)
               const found = {};
               for (const run of runs.workflow_runs) {
-                if (REQUIRED_WORKFLOWS.includes(run.name)) {
+                if (!REQUIRED_WORKFLOWS.includes(run.name)) continue;
+                const prev = found[run.name];
+                if (!prev || run.run_number > prev.run_number) {
                   found[run.name] = run;
                 }
               }
@@ -58,6 +61,7 @@ jobs:
                 continue;
               }
 
+              // If the most recent run is still in_progress or queued, wait
               const pending = Object.entries(found)
                 .filter(([_, run]) => run.status !== 'completed')
                 .map(([name, run]) => `${name} (${run.status})`);
@@ -68,9 +72,9 @@ jobs:
                 continue;
               }
 
-              // All completed — check for failures
+              // All completed — check for failures (ignore cancelled, only fail on failure)
               const failed = Object.entries(found)
-                .filter(([_, run]) => run.conclusion !== 'success')
+                .filter(([_, run]) => run.conclusion !== 'success' && run.conclusion !== 'skipped')
                 .map(([name, run]) => `${name} (${run.conclusion})`);
 
               if (failed.length > 0) {
@@ -108,6 +112,7 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const SHA = context.sha;
+            const WORKFLOW_NAMES = ['Linux (x86_64)', 'Windows (x64)', 'macOS (arm64)', 'Linux Portable'];
 
             const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
@@ -116,13 +121,18 @@ jobs:
               per_page: 100,
             });
 
-            const targetRuns = runs.workflow_runs.filter(r =>
-              ['Linux (x86_64)', 'Windows (x64)', 'macOS (arm64)', 'Linux Portable'].includes(r.name)
-              && r.status === 'completed'
-              && r.conclusion === 'success'
-            );
+            // Pick most recent successful run per workflow
+            const best = {};
+            for (const run of runs.workflow_runs) {
+              if (!WORKFLOW_NAMES.includes(run.name)) continue;
+              if (run.status !== 'completed' || run.conclusion !== 'success') continue;
+              const prev = best[run.name];
+              if (!prev || run.run_number > prev.run_number) {
+                best[run.name] = run;
+              }
+            }
 
-            for (const run of targetRuns) {
+            for (const run of Object.values(best)) {
               core.info(`Downloading artifacts from: ${run.name} (run ${run.id})`);
               const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
                 owner: context.repo.owner,
