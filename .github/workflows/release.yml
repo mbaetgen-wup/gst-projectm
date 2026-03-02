@@ -88,14 +88,6 @@ jobs:
 
             core.setFailed('Timed out waiting for packaging workflows.');
 
-      - name: Create source code archives
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          PREFIX="gst-projectm-${VERSION}"
-
-          git archive --format=tar.gz --prefix="${PREFIX}/" -o "${PREFIX}-source.tar.gz" HEAD
-          git archive --format=zip --prefix="${PREFIX}/" -o "${PREFIX}-source.zip" HEAD
-
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -165,8 +157,6 @@ jobs:
 
       - name: List release artifacts
         run: |
-          echo "=== Source archives ==="
-          ls -lh gst-projectm-*-source.* 2>/dev/null || echo "(none)"
           echo "=== Package artifacts ==="
           find release-artifacts -type f 2>/dev/null | sort || echo "(none)"
 
@@ -193,15 +183,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'pre') }}
           generate_release_notes: true
           files: |
-            gst-projectm-*-source.tar.gz
-            gst-projectm-*-source.zip
             release-files/*
           body: |
-            ## Source Code
-
-            - `gst-projectm-${{ github.ref_name }}-source.tar.gz` — source tarball
-            - `gst-projectm-${{ github.ref_name }}-source.zip` — source zip
-
             ## Variants
 
             Each binary package is available in three variants:
@@ -278,8 +261,8 @@ jobs:
             ```
 
             ### Build from Source
+            Download the source archive from the **Source code** links above, then:
             ```bash
-            tar xzf gst-projectm-${{ github.ref_name }}-source.tar.gz
             cd gst-projectm-*/
             cmake -G Ninja -S . -B build
             cmake --build build
