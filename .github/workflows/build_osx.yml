@@ -15,24 +15,30 @@ env:
   PROJECTM_REF: master
 
 jobs:
+  configure:
+    name: Configure
+    runs-on: ubuntu-latest
+    outputs:
+      projectm_matrix: ${{ steps.set.outputs.projectm_matrix }}
+      plugin_matrix: ${{ steps.set.outputs.plugin_matrix }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'projectm_matrix=[{"variant":"shared","shared":"ON","enable_gles":"OFF","extra_flags":""}]' >> $GITHUB_OUTPUT
+            echo 'plugin_matrix=[{"variant":"dynamic","projectm_artifact":"projectm-osx-arm64-shared-latest"}]' >> $GITHUB_OUTPUT
+          else
+            echo 'projectm_matrix=[{"variant":"static-gl","shared":"OFF","enable_gles":"OFF","extra_flags":"-DCMAKE_POSITION_INDEPENDENT_CODE=ON"},{"variant":"static-gles","shared":"OFF","enable_gles":"ON","extra_flags":"-DCMAKE_POSITION_INDEPENDENT_CODE=ON"},{"variant":"shared","shared":"ON","enable_gles":"OFF","extra_flags":""}]' >> $GITHUB_OUTPUT
+            echo 'plugin_matrix=[{"variant":"static-gl","projectm_artifact":"projectm-osx-arm64-static-gl-latest"},{"variant":"static-gles","projectm_artifact":"projectm-osx-arm64-static-gles-latest"},{"variant":"dynamic","projectm_artifact":"projectm-osx-arm64-shared-latest"}]' >> $GITHUB_OUTPUT
+          fi
+
   build-projectm:
     name: Build ProjectM (${{ matrix.variant }})
+    needs: [configure]
     runs-on: macos-14
     strategy:
       matrix:
-        include:
-          - variant: static-gl
-            shared: "OFF"
-            enable_gles: "OFF"
-            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          - variant: static-gles
-            shared: "OFF"
-            enable_gles: "ON"
-            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          - variant: shared
-            shared: "ON"
-            enable_gles: "OFF"
-            extra_flags: ""
+        include: ${{ fromJson(needs.configure.outputs.projectm_matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,17 +90,11 @@ jobs:
 
   build-plugin:
     name: Build GST Plugin (${{ matrix.variant }})
-    needs: [build-projectm]
+    needs: [configure, build-projectm]
     runs-on: macos-14
     strategy:
       matrix:
-        include:
-          - variant: static-gl
-            projectm_artifact: projectm-osx-arm64-static-gl-latest
-          - variant: static-gles
-            projectm_artifact: projectm-osx-arm64-static-gles-latest
-          - variant: dynamic
-            projectm_artifact: projectm-osx-arm64-shared-latest
+        include: ${{ fromJson(needs.configure.outputs.plugin_matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:

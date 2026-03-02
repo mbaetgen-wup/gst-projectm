@@ -5,7 +5,7 @@ on:
     branches:
       - "*"
     tags:
-      - "*"
+      - "v*"
 
   pull_request:
     branches:
@@ -15,24 +15,32 @@ env:
   PROJECTM_REF: master
 
 jobs:
+  configure:
+    name: Configure
+    runs-on: ubuntu-latest
+    outputs:
+      projectm_matrix: ${{ steps.set.outputs.projectm_matrix }}
+      plugin_matrix: ${{ steps.set.outputs.plugin_matrix }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PRs: dynamic only
+            echo 'projectm_matrix=[{"variant":"shared","shared":"ON","enable_gles":"OFF","extra_flags":""}]' >> $GITHUB_OUTPUT
+            echo 'plugin_matrix=[{"variant":"dynamic","projectm_artifact":"projectm-windows-shared-latest"}]' >> $GITHUB_OUTPUT
+          else
+            # Push (branches + tags): all variants
+            echo 'projectm_matrix=[{"variant":"static-gl","shared":"OFF","enable_gles":"OFF","extra_flags":"-DCMAKE_POSITION_INDEPENDENT_CODE=ON"},{"variant":"static-gles","shared":"OFF","enable_gles":"ON","extra_flags":"-DCMAKE_POSITION_INDEPENDENT_CODE=ON"},{"variant":"shared","shared":"ON","enable_gles":"OFF","extra_flags":""}]' >> $GITHUB_OUTPUT
+            echo 'plugin_matrix=[{"variant":"static-gl","projectm_artifact":"projectm-windows-static-gl-latest"},{"variant":"static-gles","projectm_artifact":"projectm-windows-static-gles-latest"},{"variant":"dynamic","projectm_artifact":"projectm-windows-shared-latest"}]' >> $GITHUB_OUTPUT
+          fi
+
   build-projectm:
     name: Build ProjectM (${{ matrix.variant }})
+    needs: [configure]
     runs-on: windows-latest
     strategy:
       matrix:
-        include:
-          - variant: static-gl
-            shared: "OFF"
-            enable_gles: "OFF"
-            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          - variant: static-gles
-            shared: "OFF"
-            enable_gles: "ON"
-            extra_flags: "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          - variant: shared
-            shared: "ON"
-            enable_gles: "OFF"
-            extra_flags: ""
+        include: ${{ fromJson(needs.configure.outputs.projectm_matrix) }}
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
@@ -48,6 +56,15 @@ jobs:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Restore vcpkg cache (PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-x64-windows-
 
       - name: Get Hash
         id: git-hash
@@ -81,25 +98,42 @@ jobs:
           name: projectm-windows-${{ matrix.variant }}-latest
           path: install/*
 
+      - name: Save vcpkg cache (push only)
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
   build-plugin:
     name: Build GST Plugin (${{ matrix.variant }})
-    needs: [build-projectm]
+    needs: [configure, build-projectm]
     runs-on: windows-latest
     strategy:
       matrix:
-        include:
-          - variant: static-gl
-            projectm_artifact: projectm-windows-static-gl-latest
-          - variant: static-gles
-            projectm_artifact: projectm-windows-static-gles-latest
-          - variant: dynamic
-            projectm_artifact: projectm-windows-shared-latest
+        include: ${{ fromJson(needs.configure.outputs.plugin_matrix) }}
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Restore vcpkg cache (PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-x64-windows-
 
       - uses: actions/download-artifact@v4
         with:
@@ -155,9 +189,16 @@ jobs:
           name: gst-projectm-windows-${{ matrix.variant }}-latest
           path: ${{ github.workspace }}\cmake-build\Release\*.dll
 
+      - name: Save vcpkg cache (push only)
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
   package:
     name: Package Windows (${{ matrix.label }})
-    needs: [build-plugin]
+    needs: [configure, build-plugin]
     runs-on: windows-latest
     if: startsWith(github.ref, 'refs/tags/')
     strategy:
