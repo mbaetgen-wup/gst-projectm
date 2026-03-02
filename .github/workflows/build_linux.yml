@@ -368,6 +368,7 @@ jobs:
   build-plugin-deb:
     name: Build Plugin (${{ matrix.image.tag }}, ${{ matrix.variant }})
     needs: [configure, build-projectm-deb, build-projectm-shared-deb]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ${{ matrix.image.runner }}
     strategy:
       matrix:
@@ -450,7 +451,7 @@ jobs:
   build-plugin-rpm:
     name: Build Plugin (${{ matrix.image.tag }}, ${{ matrix.variant }})
     needs: [configure, build-projectm-rpm, build-projectm-shared-rpm]
-    if: ${{ needs.configure.outputs.build_images_rpm != '[]' }}
+    if: ${{ !cancelled() && !failure() && needs.configure.outputs.build_images_rpm != '[]' }}
     runs-on: ubuntu-latest
     container:
       image: ${{ matrix.image.container }}
