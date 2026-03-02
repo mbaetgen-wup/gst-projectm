@@ -92,9 +92,8 @@ jobs:
         with:
           submodules: 'recursive'
 
-      - name: Restore vcpkg cache (PR only)
-        if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v4
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
         with:
           path: C:/vcpkg/installed
           key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -154,13 +153,6 @@ jobs:
         with:
           name: gst-projectm-windows-${{ matrix.variant }}-latest
           path: ${{ github.workspace }}\cmake-build\Release\*.dll
-
-      - name: Save vcpkg cache (push only)
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v4
-        with:
-          path: C:/vcpkg/installed
-          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
   package:
     name: Package Windows (${{ matrix.label }})
