@@ -156,26 +156,9 @@ jobs:
           name: gst-projectm-osx-arm64-${{ matrix.variant }}-latest
           path: build/libgstprojectm.dylib
 
-  package:
-    name: Package macOS (${{ matrix.variant }})
-    needs: [build-plugin]
-    runs-on: macos-14
-    if: startsWith(github.ref, 'refs/tags/')
-    strategy:
-      matrix:
-        include:
-          - variant: static-gl
-          - variant: static-gles
-          - variant: dynamic
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: gst-projectm-osx-arm64-${{ matrix.variant }}-latest
-          path: plugin
-
+      # ── Package (tag pushes only) ──────────────────────────────────
       - name: Create Package
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//.}"
@@ -183,7 +166,7 @@ jobs:
           PKG_NAME="gstprojectm-${VERSION}-macos-arm64-${VARIANT}"
           mkdir -p "${PKG_NAME}/lib/gstreamer-1.0"
 
-          cp plugin/libgstprojectm.dylib "${PKG_NAME}/lib/gstreamer-1.0/"
+          cp build/libgstprojectm.dylib "${PKG_NAME}/lib/gstreamer-1.0/"
           cp LICENSE "${PKG_NAME}/"
 
           if [ "${VARIANT}" = "static-gl" ]; then
@@ -215,6 +198,7 @@ jobs:
           tar czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
 
       - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           name: release-macos-arm64-${{ matrix.variant }}
           path: gstprojectm-*-macos-arm64-${{ matrix.variant }}.tar.gz
