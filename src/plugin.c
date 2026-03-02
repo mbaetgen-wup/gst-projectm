@@ -389,7 +389,7 @@ static void gst_projectm_class_init(GstProjectMClass *klass) {
 
   gst_element_class_set_static_metadata(
       GST_ELEMENT_CLASS(klass), "ProjectM Visualizer", "Generic",
-      "A plugin for visualizing music using ProjectM",
+      PACKAGE_DESCRIPTION,
       "AnomieVision <anomievision@gmail.com> | Tristan Charpentier "
       "<tristan_charpentier@hotmail.com>");
 
@@ -529,11 +529,18 @@ static gboolean plugin_init(GstPlugin *plugin) {
   GST_DEBUG_CATEGORY_INIT(gst_projectm_debug, "projectm", 0,
                           "projectM visualizer plugin");
 
+  // Log vendor metadata for static builds (visible via GST_DEBUG=projectm:4)
+#ifdef HAVE_PROJECTM_VENDOR_INFO
+  GST_INFO("projectM vendor: ref=%s commit=%s timestamp=%s",
+           PROJECTM_VENDOR_REF, PROJECTM_VENDOR_COMMIT,
+           PROJECTM_VENDOR_TIMESTAMP);
+#endif
+
   return gst_element_register(plugin, "projectm", GST_RANK_NONE,
                               GST_TYPE_PROJECTM);
 }
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, projectm,
-                  "plugin to visualize audio using the ProjectM library",
+                  PACKAGE_DESCRIPTION,
                   plugin_init, PACKAGE_VERSION, PACKAGE_LICENSE, PACKAGE_NAME,
                   PACKAGE_ORIGIN)

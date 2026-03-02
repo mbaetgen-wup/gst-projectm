@@ -1,0 +1,848 @@
+name: Linux Portable
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - master
+env:
+  # ── ProjectM source configuration ──────────────────────────────────
+  PROJECTM_REF: master
+
+  # ── Freedesktop runtime / GStreamer version for Flatpak ────────────
+  # The freedesktop runtime bundles GStreamer; pick the runtime version
+  # that carries the GStreamer branch you want.
+  #   24.08  →  GStreamer 1.24.x  (GNOME 47 / freedesktop 24.08)
+  #   23.08  →  GStreamer 1.22.x  (GNOME 45 / freedesktop 23.08)
+  FREEDESKTOP_RUNTIME_VERSION: "24.08"
+
+  # ── GStreamer versions for AppImage ──────────────────────────────────
+  # Each entry builds GStreamer from source at the given tag.
+  #   version    – exact git tag from gitlab.freedesktop.org/gstreamer
+  #   meson_extra – (optional) additional meson flags appended to the
+  #                 base configuration (last flag wins for overrides)
+  APPIMAGE_GSTREAMER_VERSIONS: >-
+    [
+      { "version": "1.24.12", "meson_extra": "-Dvaapi=auto" },
+      { "version": "1.28.1" }
+    ]
+
+  # ── AppImage base ─────────────────────────────────────────────────
+  # Ubuntu version for the AppImage build container (affects minimum
+  # glibc on the target).  22.04 → glibc 2.35 (broad compatibility).
+  APPIMAGE_BASE: "ubuntu:22.04"
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════
+  #  Configuration — expose GStreamer version list for AppImage matrix
+  # ═══════════════════════════════════════════════════════════════════
+
+  configure-portable:
+    name: Configure
+    runs-on: ubuntu-latest
+    outputs:
+      # [ { "version": "1.24.12", "tag": "1_24_12", "meson_extra": "" }, ... ]
+      gstreamer_versions: ${{ steps.set.outputs.gstreamer_versions }}
+    steps:
+      - name: Normalize GStreamer versions
+        id: set
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os, re, hashlib
+
+          versions = json.loads('''${{ env.APPIMAGE_GSTREAMER_VERSIONS }}''')
+
+          result = []
+          for v in versions:
+              meson_extra = v.get("meson_extra", "")
+              meson_hash = hashlib.sha256(meson_extra.encode()).hexdigest()[:8]
+              entry = {
+                  "version": v["version"],
+                  "tag": re.sub(r'[.]', '_', v["version"]),
+                  "meson_extra": meson_extra,
+                  "cache_key": f"{v['version']}-{meson_hash}",
+              }
+              result.append(entry)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"gstreamer_versions<<MATRIX_EOF\n{json.dumps(result)}\nMATRIX_EOF\n")
+
+          print(f"gstreamer_versions: {json.dumps(result, indent=2)}")
+          PYEOF
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Build static libprojectM for bundling (GL + GLES)
+  # ═══════════════════════════════════════════════════════════════════
+
+  build-projectm-static:
+    name: Build ProjectM (static-${{ matrix.gl_variant }}, portable)
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - gl_variant: gl
+            enable_gles: "OFF"
+          - gl_variant: gles
+            enable_gles: "ON"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: 'projectM-visualizer/projectm'
+          ref: ${{ env.PROJECTM_REF }}
+          submodules: 'recursive'
+
+      - name: Get ProjectM Git Hash
+        id: git-hash
+        run: echo "hash=$(git rev-parse HEAD)-static-${{ matrix.gl_variant }}-portablev1" >> $GITHUB_OUTPUT
+
+      - name: Save ProjectM Version Info
+        run: |
+          mkdir -p ${{ github.workspace }}/install
+          cat > ${{ github.workspace }}/install/projectm-version << EOF
+          PROJECTM_VENDOR_REF=${{ env.PROJECTM_REF }}
+          PROJECTM_VENDOR_COMMIT=$(git rev-parse --short HEAD)
+          PROJECTM_VENDOR_TIMESTAMP=$(git log -1 --format=%cI)
+          EOF
+
+      - name: Cache Install
+        id: cache-install
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/install
+          key: install-${{ runner.os }}-projectm-${{ steps.git-hash.outputs.hash }}
+
+      - name: Install Packages
+        if: steps.cache-install.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev mesa-common-dev libgles-dev \
+            libsdl2-dev libglm-dev llvm-dev libgtest-dev ninja-build
+
+      - name: Build & Install
+        if: steps.cache-install.outputs.cache-hit != 'true'
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_PLAYLIST=ON \
+            -DENABLE_GLES=${{ matrix.enable_gles }} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build build --config Release --parallel
+          cmake --build build --config Release --target install
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projectm-portable-static-${{ matrix.gl_variant }}-latest
+          path: install/*
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  Flatpak — gst-launch-1.0 with projectM plugin (GL + GLES)
+  # ═══════════════════════════════════════════════════════════════════
+
+  flatpak:
+    name: Flatpak (${{ matrix.gl_variant }})
+    needs: [build-projectm-static]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - gl_variant: gl
+            gst_gl_api: "opengl3"
+            gst_gl_context: '"opengl=3.3"'
+          - gl_variant: gles
+            gst_gl_api: "gles2"
+            gst_gl_context: '"gles2=3.2"'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: projectm-portable-static-${{ matrix.gl_variant }}-latest
+          path: projectm-install
+
+      - name: Install Flatpak and flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub \
+            runtime/org.freedesktop.Platform/x86_64/${{ env.FREEDESKTOP_RUNTIME_VERSION }} \
+            runtime/org.freedesktop.Sdk/x86_64/${{ env.FREEDESKTOP_RUNTIME_VERSION }}
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=0.0.0+git.$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load vendor metadata
+        id: vendor
+        run: |
+          if [ -f projectm-install/projectm-version ]; then
+            cat projectm-install/projectm-version >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare sources for Flatpak build
+        run: |
+          mkdir -p flatpak-build/projectm-prefix
+          cp -a projectm-install/* flatpak-build/projectm-prefix/
+
+          mkdir -p flatpak-build/gst-projectm-src
+          rsync -a --exclude=flatpak-build --exclude=.git --exclude=build \
+            --exclude=dist . flatpak-build/gst-projectm-src/
+
+          cat > flatpak-build/gst-projectm-src/BUNDLE-INFO << 'BLEOF'
+          This Flatpak bundle is a combined work that includes GStreamer and
+          GPL-licensed plugins (gst-plugins-ugly, x264). The combined bundle
+          is distributed under the terms of the GNU General Public License
+          version 2 or later (see BUNDLE-LICENSE).
+
+          The gst-projectm plugin itself is licensed under LGPL-2.1-or-later.
+          See https://github.com/projectM-visualizer/gst-projectm for the
+          plugin source code and its LICENSE file.
+
+          GStreamer and its plugins are licensed under various open source
+          licenses. See https://gstreamer.freedesktop.org/documentation/
+          frequently-asked-questions/licensing.html for details.
+          BLEOF
+          sed -i 's/^          //' flatpak-build/gst-projectm-src/BUNDLE-INFO
+
+          mkdir -p flatpak-build/metainfo
+          cat > flatpak-build/metainfo/org.projectmvisualizer.GstLaunch.metainfo.xml << 'METAEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>org.projectmvisualizer.GstLaunch</id>
+            <name>gst-projectM Launch</name>
+            <summary>GStreamer audio visualizer powered by projectM</summary>
+            <developer_name>projectM Visualizer</developer_name>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>GPL-2.0-or-later</project_license>
+            <description>
+              <p>Self-contained GStreamer bundle with the projectM audio visualization plugin. Accepts audio input and produces real-time MilkDrop-style visualizations as video output.</p>
+              <p>This bundle includes GStreamer and runs gst-launch-1.0 directly. Pass pipeline arguments to visualize audio in real time or convert audio files to video.</p>
+            </description>
+            <icon type="cached">org.projectmvisualizer.GstLaunch</icon>
+            <launchable type="desktop-id">org.projectmvisualizer.GstLaunch.desktop</launchable>
+            <url type="homepage">https://github.com/projectM-visualizer/gst-projectm</url>
+            <url type="bugtracker">https://github.com/projectM-visualizer/gst-projectm/issues</url>
+            <url type="vcs-browser">https://github.com/projectM-visualizer/gst-projectm</url>
+            <url type="contribute">https://github.com/projectM-visualizer/gst-projectm/pulls</url>
+            <releases>
+              <release version="METAINFO_VERSION_PLACEHOLDER" date="METAINFO_DATE_PLACEHOLDER">
+                <description>
+                  <p>See the full changelog at https://github.com/projectM-visualizer/gst-projectm/releases</p>
+                </description>
+              </release>
+            </releases>
+            <content_rating type="oars-1.1"/>
+          </component>
+          METAEOF
+          sed -i 's/^          //' flatpak-build/metainfo/org.projectmvisualizer.GstLaunch.metainfo.xml
+
+          cp icon/gst-projectm.svg flatpak-build/metainfo/org.projectmvisualizer.GstLaunch.svg
+
+      - name: Generate Flatpak manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GL_VARIANT="${{ matrix.gl_variant }}"
+          RUNTIME_VERSION="${{ env.FREEDESKTOP_RUNTIME_VERSION }}"
+          GST_GL_API="${{ matrix.gst_gl_api }}"
+          GST_GL_CONTEXT="${{ matrix.gst_gl_context }}"
+
+          VENDOR_REF="${{ steps.vendor.outputs.PROJECTM_VENDOR_REF }}"
+          VENDOR_COMMIT="${{ steps.vendor.outputs.PROJECTM_VENDOR_COMMIT }}"
+          VENDOR_TIMESTAMP="${{ steps.vendor.outputs.PROJECTM_VENDOR_TIMESTAMP }}"
+
+          cat > flatpak-build/org.projectmvisualizer.GstLaunch.yml << 'MANIFESTEOF'
+          app-id: org.projectmvisualizer.GstLaunch
+          runtime: org.freedesktop.Platform
+          runtime-version: 'RUNTIME_VERSION_PLACEHOLDER'
+          sdk: org.freedesktop.Sdk
+          command: projectm-gst-launch
+
+          finish-args:
+            # GL / Vulkan rendering
+            - --device=dri
+            - --share=ipc
+            # Wayland + X11 display
+            - --socket=wayland
+            - --socket=fallback-x11
+            # PulseAudio / PipeWire audio
+            - --socket=pulseaudio
+            # Filesystem access for presets, textures, audio files
+            - --filesystem=home:ro
+            - --filesystem=xdg-music:ro
+            # Environment for GStreamer
+            - --env=GST_PLUGIN_PATH=/app/lib/gstreamer-1.0
+            # GL API defaults (user can override with: flatpak run --env=GST_GL_API=... )
+            - --env=GST_GL_API=GST_GL_API_PLACEHOLDER
+            - --env=GST_GL_CONTEXT=GST_GL_CONTEXT_PLACEHOLDER
+
+          modules:
+            - name: projectm-static-prefix
+              buildsystem: simple
+              build-commands:
+                - mkdir -p /app/share/projectm-prefix
+                - cp -a . /app/share/projectm-prefix/
+                - sed -i '/find_dependency(OpenGL/d' /app/share/projectm-prefix/lib/cmake/projectM4/projectM4Config.cmake || true
+              sources:
+                - type: dir
+                  path: projectm-prefix
+
+            - name: gst-projectm-plugin
+              buildsystem: cmake-ninja
+              no-make-install: true
+              config-opts:
+                - -DCMAKE_BUILD_TYPE=Release
+                - -DprojectM4_DIR=/app/share/projectm-prefix/lib/cmake/projectM4
+                - -DprojectM4Playlist_DIR=/app/share/projectm-prefix/lib/cmake/projectM4Playlist
+                - -DGSTPROJECTM_VERSION=VERSION_PLACEHOLDER
+                - -DPROJECTM_VENDOR_REF=VENDOR_REF_PLACEHOLDER
+                - -DPROJECTM_VENDOR_COMMIT=VENDOR_COMMIT_PLACEHOLDER
+                - -DPROJECTM_VENDOR_TIMESTAMP=VENDOR_TIMESTAMP_PLACEHOLDER
+                - -DPROJECTM_VENDOR_GL_VARIANT=GL_VARIANT_PLACEHOLDER
+              post-install:
+                - install -Dm755 libgstprojectm.so /app/lib/gstreamer-1.0/libgstprojectm.so
+                - install -Dm644 BUNDLE-LICENSE /app/share/licenses/gst-projectm/BUNDLE-LICENSE
+                - install -Dm644 BUNDLE-INFO /app/share/licenses/gst-projectm/BUNDLE-INFO
+              sources:
+                - type: dir
+                  path: gst-projectm-src
+
+            - name: projectm-presets
+              buildsystem: simple
+              build-commands:
+                - mkdir -p /app/share/projectM/presets
+                - cp -a . /app/share/projectM/presets/
+              sources:
+                - type: git
+                  url: https://github.com/projectM-visualizer/presets-cream-of-the-crop.git
+                  branch: master
+
+            - name: projectm-textures
+              buildsystem: simple
+              build-commands:
+                - mkdir -p /app/share/projectM/textures
+                - cp -a . /app/share/projectM/textures/
+              sources:
+                - type: git
+                  url: https://github.com/projectM-visualizer/presets-milkdrop-texture-pack.git
+                  branch: master
+
+            - name: wrapper-and-desktop
+              buildsystem: simple
+              build-commands:
+                - install -Dm755 projectm-gst-launch.sh /app/bin/projectm-gst-launch
+                - install -Dm644 projectm-gst-launch.desktop /app/share/applications/org.projectmvisualizer.GstLaunch.desktop
+                - install -Dm644 org.projectmvisualizer.GstLaunch.metainfo.xml /app/share/metainfo/org.projectmvisualizer.GstLaunch.metainfo.xml
+                - install -Dm644 org.projectmvisualizer.GstLaunch.svg /app/share/icons/hicolor/scalable/apps/org.projectmvisualizer.GstLaunch.svg
+              sources:
+                - type: script
+                  dest-filename: projectm-gst-launch.sh
+                  commands:
+                    - '#!/bin/bash'
+                    - '# Convenience wrapper for gst-launch-1.0 with projectM plugin.'
+                    - '# With no arguments, runs a default visualization pipeline.'
+                    - '# Any arguments are forwarded to gst-launch-1.0 as-is.'
+                    - 'export GST_PLUGIN_PATH=/app/lib/gstreamer-1.0'
+                    - 'if [ $# -eq 0 ]; then'
+                    - '  exec gst-launch-1.0 autoaudiosrc ! audioconvert ! audioresample ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! queue ! projectm ! "video/x-raw(memory:GLMemory),width=1024,height=768,framerate=30/1" ! glimagesink'
+                    - 'else'
+                    - '  exec gst-launch-1.0 "$@"'
+                    - 'fi'
+                - type: script
+                  dest-filename: projectm-gst-launch.desktop
+                  commands:
+                    - '[Desktop Entry]'
+                    - 'Type=Application'
+                    - 'Name=gst-projectM Launch'
+                    - 'Comment=GStreamer audio visualizer powered by projectM'
+                    - 'Icon=org.projectmvisualizer.GstLaunch'
+                    - 'Exec=projectm-gst-launch'
+                    - 'Terminal=true'
+                    - 'Categories=AudioVideo;Audio;Video;'
+                - type: dir
+                  path: metainfo
+          MANIFESTEOF
+
+          # Substitute placeholders
+          sed -i \
+            -e "s|RUNTIME_VERSION_PLACEHOLDER|${RUNTIME_VERSION}|g" \
+            -e "s|VERSION_PLACEHOLDER|${VERSION}|g" \
+            -e "s|VENDOR_REF_PLACEHOLDER|${VENDOR_REF}|g" \
+            -e "s|VENDOR_COMMIT_PLACEHOLDER|${VENDOR_COMMIT}|g" \
+            -e "s|VENDOR_TIMESTAMP_PLACEHOLDER|${VENDOR_TIMESTAMP}|g" \
+            -e "s|GL_VARIANT_PLACEHOLDER|${GL_VARIANT}|g" \
+            -e "s|GST_GL_API_PLACEHOLDER|${GST_GL_API}|g" \
+            -e "s|GST_GL_CONTEXT_PLACEHOLDER|${GST_GL_CONTEXT}|g" \
+            flatpak-build/org.projectmvisualizer.GstLaunch.yml
+
+          # Substitute metainfo placeholders
+          RELEASE_DATE=$(date +%Y-%m-%d)
+          sed -i \
+            -e "s|METAINFO_VERSION_PLACEHOLDER|${VERSION}|g" \
+            -e "s|METAINFO_DATE_PLACEHOLDER|${RELEASE_DATE}|g" \
+            flatpak-build/metainfo/org.projectmvisualizer.GstLaunch.metainfo.xml
+
+      - name: Build Flatpak
+        run: |
+          flatpak-builder --force-clean --repo=flatpak-repo \
+            flatpak-app flatpak-build/org.projectmvisualizer.GstLaunch.yml
+
+      - name: Create Flatpak bundle
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GL_VARIANT="${{ matrix.gl_variant }}"
+          RUNTIME_VERSION="${{ env.FREEDESKTOP_RUNTIME_VERSION }}"
+          # freedesktop runtime 24.08 includes GStreamer 1.24.x
+          GST_VERSION="1.24"
+          flatpak build-bundle flatpak-repo \
+            --runtime-repo="https://dl.flathub.org/repo/flathub.flatpakrepo" \
+            "gst-projectm-${VERSION}-gst-${GST_VERSION}-${GL_VARIANT}-x86_64.flatpak" \
+            org.projectmvisualizer.GstLaunch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak-${{ matrix.gl_variant }}-x86_64
+          path: gst-projectm-*-x86_64.flatpak
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  AppImage — build GStreamer once, then package GL + GLES variants
+  # ═══════════════════════════════════════════════════════════════════
+
+  build-gstreamer-appimage:
+    name: Build GStreamer ${{ matrix.gst.version }} (AppImage)
+    needs: [configure-portable]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    strategy:
+      matrix:
+        gst: ${{ fromJSON(needs.configure-portable.outputs.gstreamer_versions) }}
+    steps:
+      - name: Cache GStreamer build
+        id: cache-gst
+        uses: actions/cache@v4
+        with:
+          path: /opt/gstreamer
+          key: gstreamer-appimage-${{ matrix.gst.cache_key }}-ubuntu2204-v1
+
+      - name: Install build dependencies
+        if: steps.cache-gst.outputs.cache-hit != 'true'
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git cmake ninja-build pkg-config gcc g++ \
+            python3 python3-pip \
+            flex bison nasm \
+            libgl1-mesa-dev mesa-common-dev libgles-dev libegl1-mesa-dev \
+            libdrm-dev libgbm-dev \
+            libx11-dev libxext-dev libxv-dev libxi-dev \
+            libx11-xcb-dev libxcb1-dev \
+            libwayland-dev wayland-protocols \
+            libpulse-dev libasound2-dev \
+            libglib2.0-dev \
+            libgudev-1.0-dev \
+            libxml2-dev \
+            libpng-dev libjpeg-dev \
+            libopus-dev libvorbis-dev libflac-dev \
+            libmp3lame-dev \
+            libx264-dev libx265-dev \
+            libde265-dev \
+            liborc-0.4-dev
+
+      - name: Build GStreamer from source
+        if: steps.cache-gst.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          GST_VERSION="${{ matrix.gst.version }}"
+          GST_PREFIX="/opt/gstreamer"
+
+          pip3 install meson
+
+          git clone --depth 1 --branch "${GST_VERSION}" \
+            https://gitlab.freedesktop.org/gstreamer/gstreamer.git /tmp/gstreamer
+
+          cd /tmp/gstreamer
+
+          # Base meson configuration — works across GStreamer 1.22+
+          meson setup builddir \
+            --prefix="${GST_PREFIX}" \
+            --buildtype=release \
+            --strip \
+            -Dbase=enabled \
+            -Dgood=enabled \
+            -Dbad=enabled \
+            -Dugly=enabled \
+            -Dlibav=enabled \
+            -Dgst-plugins-base:gl=enabled \
+            -Dgst-plugins-base:gl_platform=egl,glx \
+            -Dgst-plugins-base:gl_winsys=x11,wayland \
+            -Dgst-plugins-base:gl_api=opengl,gles2 \
+            -Dgst-plugins-base:x11=enabled \
+            -Dgst-plugins-base:ogg=enabled \
+            -Dgst-plugins-base:vorbis=enabled \
+            -Dgst-plugins-base:opus=enabled \
+            -Dgst-plugins-base:pango=auto \
+            -Dgst-plugins-good:pulse=enabled \
+            -Dgst-plugins-good:v4l2=enabled \
+            -Dgst-plugins-good:ximagesrc=enabled \
+            -Dgst-plugins-good:flac=enabled \
+            -Dgst-plugins-good:lame=auto \
+            -Dgst-plugins-bad:openh264=auto \
+            -Dgst-plugins-ugly:x264=enabled \
+            -Ddevtools=disabled \
+            -Dtests=disabled \
+            -Dexamples=disabled \
+            -Ddoc=disabled \
+            -Dgtk_doc=disabled \
+            -Dintrospection=disabled \
+            -Dpython=disabled \
+            -Dges=disabled \
+            -Drtsp_server=disabled \
+            -Dgpl=enabled \
+            ${{ matrix.gst.meson_extra }}
+
+          ninja -C builddir -j$(nproc)
+          ninja -C builddir install
+
+          echo "=== Installed GStreamer ${GST_VERSION} ==="
+          export LD_LIBRARY_PATH="${GST_PREFIX}/lib/x86_64-linux-gnu:${GST_PREFIX}/lib:${LD_LIBRARY_PATH}"
+          "${GST_PREFIX}/bin/gst-launch-1.0" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gstreamer-appimage-${{ matrix.gst.version }}
+          path: /opt/gstreamer/**
+
+  appimage:
+    name: AppImage (${{ matrix.gst.version }}, ${{ matrix.gl_variant }})
+    needs: [configure-portable, build-projectm-static, build-gstreamer-appimage]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    strategy:
+      matrix:
+        gst: ${{ fromJSON(needs.configure-portable.outputs.gstreamer_versions) }}
+        gl_variant: [gl, gles]
+        include:
+          - gl_variant: gl
+            gst_gl_api: "opengl3"
+            gst_gl_context: '"opengl=3.3"'
+          - gl_variant: gles
+            gst_gl_api: "gles2"
+            gst_gl_context: '"gles2=3.2"'
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git cmake ninja-build pkg-config gcc g++ rsync \
+            patchelf file desktop-file-utils \
+            wget ca-certificates \
+            libgl1-mesa-dev mesa-common-dev libgles-dev libegl1-mesa-dev \
+            libdrm-dev libgbm-dev \
+            libx11-dev libxext-dev libxv-dev libxi-dev \
+            libx11-xcb-dev libxcb1-dev \
+            libwayland-dev \
+            libpulse-dev libasound2-dev \
+            libglib2.0-dev \
+            libxml2-dev \
+            liborc-0.4-dev \
+            libgudev-1.0-dev \
+            libx264-dev libx265-dev libde265-dev \
+            libmp3lame-dev \
+            libopus-dev libvorbis-dev libflac-dev
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: projectm-portable-static-${{ matrix.gl_variant }}-latest
+          path: projectm-install
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gstreamer-appimage-${{ matrix.gst.version }}
+          path: /opt/gstreamer
+
+      - name: Restore execute permissions
+        shell: bash
+        run: |
+          # Artifact upload/download strips execute permissions
+          chmod +x /opt/gstreamer/bin/* 2>/dev/null || true
+          find /opt/gstreamer -name '*.so*' -exec chmod +x {} \; 2>/dev/null || true
+          find /opt/gstreamer -name 'gst-plugin-scanner' -exec chmod +x {} \; 2>/dev/null || true
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=0.0.0+git.$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load vendor metadata
+        id: vendor
+        shell: bash
+        run: |
+          if [ -f projectm-install/projectm-version ]; then
+            cat projectm-install/projectm-version >> $GITHUB_OUTPUT
+          fi
+
+      - name: Patch projectM4 CMake config (GLES workaround)
+        shell: bash
+        run: |
+          # When ENABLE_GLES=ON, libprojectM's installed config contains:
+          #   find_dependency(OpenGL COMPONENTS GLES3)
+          # This fails on systems without GLES3 headers even though glad
+          # handles all GL/GLES loading internally. Remove the problematic
+          # find_dependency call. See: upstream libprojectM issue.
+          CONFIG_FILE="projectm-install/lib/cmake/projectM4/projectM4Config.cmake"
+          if [ -f "${CONFIG_FILE}" ]; then
+            sed -i '/find_dependency(OpenGL/d' "${CONFIG_FILE}"
+            echo "Patched: removed find_dependency(OpenGL) from projectM4Config.cmake"
+          fi
+
+      - name: Build gst-projectM plugin
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GL_VARIANT="${{ matrix.gl_variant }}"
+          GST_PREFIX="/opt/gstreamer"
+
+          VENDOR_FLAGS=""
+          if [ -n "${{ steps.vendor.outputs.PROJECTM_VENDOR_REF }}" ]; then
+            VENDOR_FLAGS="-DPROJECTM_VENDOR_REF=${{ steps.vendor.outputs.PROJECTM_VENDOR_REF }}"
+            VENDOR_FLAGS="${VENDOR_FLAGS} -DPROJECTM_VENDOR_COMMIT=${{ steps.vendor.outputs.PROJECTM_VENDOR_COMMIT }}"
+            VENDOR_FLAGS="${VENDOR_FLAGS} -DPROJECTM_VENDOR_TIMESTAMP=${{ steps.vendor.outputs.PROJECTM_VENDOR_TIMESTAMP }}"
+            VENDOR_FLAGS="${VENDOR_FLAGS} -DPROJECTM_VENDOR_GL_VARIANT=${GL_VARIANT}"
+          fi
+
+          export PKG_CONFIG_PATH="${GST_PREFIX}/lib/x86_64-linux-gnu/pkgconfig:${GST_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="${GST_PREFIX}/lib/x86_64-linux-gnu:${GST_PREFIX}/lib:${LD_LIBRARY_PATH}"
+
+          PROJECTM_PREFIX="$(pwd)/projectm-install"
+
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_VERBOSE_MAKEFILE=YES \
+            -DprojectM4_DIR="${PROJECTM_PREFIX}/lib/cmake/projectM4" \
+            -DprojectM4Playlist_DIR="${PROJECTM_PREFIX}/lib/cmake/projectM4Playlist" \
+            -DGSTPROJECTM_VERSION="${VERSION}" \
+            ${VENDOR_FLAGS}
+          cmake --build build --config Release --parallel
+
+          # Install plugin into GStreamer prefix
+          GST_PLUGIN_DIR=$(pkg-config --variable=pluginsdir gstreamer-1.0 2>/dev/null \
+            || echo "${GST_PREFIX}/lib/x86_64-linux-gnu/gstreamer-1.0")
+          mkdir -p "${GST_PLUGIN_DIR}"
+          cp build/libgstprojectm.so "${GST_PLUGIN_DIR}/"
+
+          echo "=== Plugin built and installed to ${GST_PLUGIN_DIR} ==="
+          ls -la "${GST_PLUGIN_DIR}/libgstprojectm.so"
+
+      - name: Assemble AppImage with linuxdeploy
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GL_VARIANT="${{ matrix.gl_variant }}"
+          GST_PREFIX="/opt/gstreamer"
+          GST_VERSION="${{ matrix.gst.version }}"
+          APPDIR="/tmp/AppDir"
+
+          # Download linuxdeploy
+          wget -q -O /tmp/linuxdeploy \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          chmod +x /tmp/linuxdeploy
+
+          # Create AppDir structure
+          mkdir -p "${APPDIR}/usr/bin"
+          mkdir -p "${APPDIR}/usr/lib"
+          mkdir -p "${APPDIR}/usr/lib/gstreamer-1.0"
+          mkdir -p "${APPDIR}/usr/share/applications"
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+
+          # Copy GStreamer binaries
+          cp "${GST_PREFIX}/bin/gst-launch-1.0" "${APPDIR}/usr/bin/"
+          cp "${GST_PREFIX}/bin/gst-inspect-1.0" "${APPDIR}/usr/bin/"
+
+          # Include bundle license and info (GPL-2.0 due to bundled GStreamer GPL plugins)
+          mkdir -p "${APPDIR}/usr/share/licenses/gst-projectm"
+          cp BUNDLE-LICENSE "${APPDIR}/usr/share/licenses/gst-projectm/"
+          cat > "${APPDIR}/usr/share/licenses/gst-projectm/BUNDLE-INFO" << 'BLEOF'
+          This AppImage bundle is a combined work that includes GStreamer and
+          GPL-licensed plugins (gst-plugins-ugly, x264). The combined bundle
+          is distributed under the terms of the GNU General Public License
+          version 2 or later (see BUNDLE-LICENSE).
+
+          The gst-projectm plugin itself is licensed under LGPL-2.1-or-later.
+          See https://github.com/projectM-visualizer/gst-projectm for the
+          plugin source code and its LICENSE file.
+
+          GStreamer and its plugins are licensed under various open source
+          licenses. See https://gstreamer.freedesktop.org/documentation/
+          frequently-asked-questions/licensing.html for details.
+          BLEOF
+          sed -i 's/^          //' "${APPDIR}/usr/share/licenses/gst-projectm/BUNDLE-INFO"
+
+          # Copy GStreamer libraries — but EXCLUDE GL/EGL/Mesa/DRM libraries.
+          # Those must come from the host system to match the GPU driver,
+          # otherwise GL context creation will fail when opening a window.
+          GL_EXCLUDE_PATTERN='libGL\|libEGL\|libGLX\|libGLES\|libGLdispatch\|libgbm\|libdrm\|libwayland-egl\|libvulkan\|libOpenGL\|libva\.so\|libva-drm\|libva-wayland\|libva-x11'
+          for libdir in "${GST_PREFIX}/lib" "${GST_PREFIX}/lib/x86_64-linux-gnu"; do
+            if [ -d "${libdir}" ]; then
+              # Shared libraries (excluding GL stack)
+              find "${libdir}" -maxdepth 1 -name '*.so*' \
+                | grep -v "${GL_EXCLUDE_PATTERN}" \
+                | xargs -I{} cp -a {} "${APPDIR}/usr/lib/" 2>/dev/null || true
+              # GStreamer plugins (all — the GL plugin will dlopen host GL)
+              if [ -d "${libdir}/gstreamer-1.0" ]; then
+                find "${libdir}/gstreamer-1.0" -name '*.so' \
+                  -exec cp {} "${APPDIR}/usr/lib/gstreamer-1.0/" \;
+              fi
+              # GIO modules
+              if [ -d "${libdir}/gio" ]; then
+                cp -a "${libdir}/gio" "${APPDIR}/usr/lib/"
+              fi
+            fi
+          done
+
+          echo "=== Bundled libraries (host-only GL/Mesa libs should NOT be here) ==="
+          ls "${APPDIR}/usr/lib/" | grep -iE '^lib(GL|EGL|GLESv|GLX|GLdispatch|gbm|drm|wayland-egl|vulkan|va|va-)' || echo "OK: no host GL/Mesa/VA libs bundled"
+
+          # Create wrapper script that uses bundled GStreamer but host GL stack.
+          GST_GL_API="${{ matrix.gst_gl_api }}"
+          GST_GL_CONTEXT="${{ matrix.gst_gl_context }}"
+          cat > "${APPDIR}/usr/bin/projectm-gst-launch" << WRAPPER
+          #!/bin/bash
+          HERE="\$(dirname "\$(readlink -f "\$0")")"
+          APPLIB="\${HERE}/../lib"
+
+          # Bundled GStreamer plugins only — ignore any system GStreamer
+          export GST_PLUGIN_PATH="\${APPLIB}/gstreamer-1.0"
+          export GST_PLUGIN_SYSTEM_PATH=""
+          export GST_PLUGIN_SCANNER="\${HERE}/gst-plugin-scanner"
+          export GIO_MODULE_DIR="\${APPLIB}/gio/modules"
+
+          # GL API defaults (override by setting GST_GL_API / GST_GL_CONTEXT
+          # in your environment before launching)
+          export GST_GL_API="\${GST_GL_API:-${GST_GL_API}}"
+          export GST_GL_CONTEXT="\${GST_GL_CONTEXT:-${GST_GL_CONTEXT}}"
+
+          # Add bundled libs to the search path, but keep system paths too
+          # so that GL/EGL/DRM/Mesa libraries are resolved from the host.
+          export LD_LIBRARY_PATH="\${APPLIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+
+          # With no arguments, runs a default visualization pipeline.
+          # Any arguments are forwarded to gst-launch-1.0 as-is.
+          if [ \$# -eq 0 ]; then
+            exec "\${HERE}/gst-launch-1.0" autoaudiosrc ! audioconvert ! audioresample ! "audio/x-raw, format=S16LE, rate=44100, channels=2, layout=interleaved" ! queue ! projectm ! "video/x-raw(memory:GLMemory),width=1024,height=768,framerate=30/1" ! glimagesink
+          else
+            exec "\${HERE}/gst-launch-1.0" "\$@"
+          fi
+          WRAPPER
+          sed -i 's/^          //' "${APPDIR}/usr/bin/projectm-gst-launch"
+          chmod +x "${APPDIR}/usr/bin/projectm-gst-launch"
+
+          # Copy gst-plugin-scanner if present
+          for scanner in "${GST_PREFIX}/libexec/gstreamer-1.0/gst-plugin-scanner" \
+                         "${GST_PREFIX}/lib/x86_64-linux-gnu/gstreamer-1.0/gst-plugin-scanner"; do
+            if [ -f "${scanner}" ]; then
+              cp "${scanner}" "${APPDIR}/usr/bin/gst-plugin-scanner"
+              break
+            fi
+          done
+
+          # Desktop file
+          cat > "${APPDIR}/usr/share/applications/projectm-gst-launch.desktop" << 'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=gst-projectM Launch
+          Comment=GStreamer audio visualizer powered by projectM
+          Exec=projectm-gst-launch
+          Icon=projectm-gst-launch
+          Terminal=true
+          Categories=AudioVideo;Audio;Video;
+          DESKTOP
+          sed -i 's/^          //' "${APPDIR}/usr/share/applications/projectm-gst-launch.desktop"
+
+          # AppStream metainfo (used by software managers and appimaged)
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_DATE=$(date +%Y-%m-%d)
+          mkdir -p "${APPDIR}/usr/share/metainfo"
+          cat > "${APPDIR}/usr/share/metainfo/projectm-gst-launch.appdata.xml" << METAEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>projectm-gst-launch</id>
+            <name>gst-projectM Launch</name>
+            <summary>GStreamer audio visualizer powered by projectM</summary>
+            <developer_name>projectM Visualizer</developer_name>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>GPL-2.0-or-later</project_license>
+            <description>
+              <p>Self-contained GStreamer bundle with the projectM audio visualization plugin. Accepts audio input and produces real-time MilkDrop-style visualizations as video output.</p>
+              <p>This AppImage includes GStreamer and runs gst-launch-1.0 directly. Pass pipeline arguments to visualize audio in real time or convert audio files to video.</p>
+            </description>
+            <launchable type="desktop-id">projectm-gst-launch.desktop</launchable>
+            <url type="homepage">https://github.com/projectM-visualizer/gst-projectm</url>
+            <url type="bugtracker">https://github.com/projectM-visualizer/gst-projectm/issues</url>
+            <url type="vcs-browser">https://github.com/projectM-visualizer/gst-projectm</url>
+            <url type="contribute">https://github.com/projectM-visualizer/gst-projectm/pulls</url>
+            <releases>
+              <release version="${VERSION}" date="${RELEASE_DATE}">
+                <description>
+                  <p>See the full changelog at https://github.com/projectM-visualizer/gst-projectm/releases</p>
+                </description>
+              </release>
+            </releases>
+            <content_rating type="oars-1.1"/>
+          </component>
+          METAEOF
+          sed -i 's/^          //' "${APPDIR}/usr/share/metainfo/projectm-gst-launch.appdata.xml"
+
+          # Icon from repo
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
+          cp icon/gst-projectm.svg "${APPDIR}/usr/share/icons/hicolor/scalable/apps/projectm-gst-launch.svg"
+
+          # Build AppImage using linuxdeploy.
+          # Exclude GL/Mesa/DRM libraries — these MUST come from the host.
+          # Set LD_LIBRARY_PATH so linuxdeploy can find the bundled GStreamer
+          # libs when tracing ELF dependencies of gst-launch-1.0.
+          export LINUXDEPLOY_EXCLUDE_LIBS="libGL.so*:libGLX.so*:libGLdispatch.so*:libEGL.so*:libGLESv2.so*:libOpenGL.so*:libgbm.so*:libdrm.so*:libwayland-egl.so*:libvulkan.so*:libva.so*:libva-drm.so*:libva-wayland.so*:libva-x11.so*"
+          export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${GST_PREFIX}/lib/x86_64-linux-gnu:${GST_PREFIX}/lib:${LD_LIBRARY_PATH}"
+          ARCH=x86_64 /tmp/linuxdeploy \
+            --appimage-extract-and-run \
+            --appdir "${APPDIR}" \
+            --desktop-file "${APPDIR}/usr/share/applications/projectm-gst-launch.desktop" \
+            --icon-file "${APPDIR}/usr/share/icons/hicolor/scalable/apps/projectm-gst-launch.svg" \
+            --output appimage
+
+          # Rename to our convention
+          mv projectM_GStreamer*.AppImage \
+            "gst-projectm-${VERSION}-gst-${GST_VERSION}-${GL_VARIANT}-x86_64.AppImage" 2>/dev/null \
+          || mv *.AppImage \
+            "gst-projectm-${VERSION}-gst-${GST_VERSION}-${GL_VARIANT}-x86_64.AppImage"
+
+          chmod +x "gst-projectm-${VERSION}-gst-${GST_VERSION}-${GL_VARIANT}-x86_64.AppImage"
+
+          echo "=== AppImage created ==="
+          ls -lh gst-projectm-*.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-appimage-gst${{ matrix.gst.tag }}-${{ matrix.gl_variant }}-x86_64
+          path: gst-projectm-*-x86_64.AppImage

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <!-- Background radial gradient: deep space -->
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#1a1035"/>
+      <stop offset="100%" stop-color="#0a0a14"/>
+    </radialGradient>
+
+    <!-- Ripple gradient: hot pink to cyan -->
+    <radialGradient id="ripple" cx="50%" cy="50%" r="45%">
+      <stop offset="0%" stop-color="#ff2d7b" stop-opacity="0.85"/>
+      <stop offset="40%" stop-color="#a83279" stop-opacity="0.5"/>
+      <stop offset="70%" stop-color="#3b82c4" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Central glow -->
+    <radialGradient id="glow" cx="50%" cy="48%" r="22%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#ff6eb4" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#ff2d7b" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- M gradient fill: vibrant blue matching projectM -->
+    <linearGradient id="mFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4a9de0"/>
+      <stop offset="35%" stop-color="#2278c4"/>
+      <stop offset="100%" stop-color="#14568e"/>
+    </linearGradient>
+
+    <!-- M glow filter -->
+    <filter id="mGlow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1" stdDeviation="4" flood-color="#1a8de8" flood-opacity="0.5"/>
+    </filter>
+
+    <!-- gst text glow -->
+    <filter id="gstGlow" x="-25%" y="-30%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#1a8de8" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="256" height="256" rx="48" fill="url(#bg)"/>
+
+  <!-- Outer ripple rings -->
+  <ellipse cx="128" cy="140" rx="108" ry="100" fill="none"
+           stroke="#22d3ee" stroke-width="1.2" stroke-opacity="0.15"/>
+  <ellipse cx="128" cy="140" rx="90" ry="84" fill="none"
+           stroke="#3b9fc9" stroke-width="1.5" stroke-opacity="0.25"/>
+  <ellipse cx="128" cy="140" rx="72" ry="67" fill="none"
+           stroke="#7b5ea7" stroke-width="2" stroke-opacity="0.35"/>
+  <ellipse cx="128" cy="140" rx="54" ry="50" fill="none"
+           stroke="#c43a7b" stroke-width="2.5" stroke-opacity="0.5"/>
+  <ellipse cx="128" cy="140" rx="36" ry="33" fill="none"
+           stroke="#ff2d7b" stroke-width="3" stroke-opacity="0.7"/>
+
+  <!-- Ripple fill glow -->
+  <ellipse cx="128" cy="140" rx="100" ry="93" fill="url(#ripple)" opacity="0.4"/>
+
+  <!-- Central bright glow -->
+  <ellipse cx="128" cy="132" rx="42" ry="38" fill="url(#glow)"/>
+
+  <!--
+    "gst" — bold italic serif/brush font style, wider.
+    Using text element with a serif italic style to give a painted/editorial feel
+    without being hand-drawn. Slightly rotated for casual energy.
+  -->
+  <text x="128" y="78" font-family="Georgia, 'Times New Roman', 'Palatino', serif"
+        font-size="44" font-weight="700" font-style="italic" letter-spacing="12"
+        fill="#2278c4" fill-opacity="0.95" text-anchor="middle"
+        filter="url(#gstGlow)">gst</text>
+
+  <!--
+    Geometric "M" logo — matching projectM icon angles.
+    Outer legs splay outward, pointed peaks, deep center V.
+  -->
+  <g filter="url(#mGlow)">
+    <path d="
+      M 48,212
+      L 80,100
+      L 128,170
+      L 176,100
+      L 208,212
+      L 184,212
+      L 164,138
+      L 128,192
+      L 92,138
+      L 72,212
+      Z
+    " fill="url(#mFill)" stroke="#0c3a68" stroke-width="3" stroke-linejoin="miter" stroke-miterlimit="12"/>
+  </g>
+
+  <!-- Subtle outer vignette -->
+  <rect width="256" height="256" rx="48" fill="none"
+        stroke="#0a0a14" stroke-width="8" stroke-opacity="0.3"/>
+</svg>

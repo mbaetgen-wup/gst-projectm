@@ -1,0 +1,274 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for packaging workflows
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const SHA = context.sha;
+            const OWNER = context.repo.owner;
+            const REPO = context.repo.repo;
+            const POLL_INTERVAL = 30000; // 30 seconds
+            const TIMEOUT = 90 * 60 * 1000; // 90 minutes
+
+            const REQUIRED_WORKFLOWS = [
+              'Linux (x86_64)',
+              'Windows (x64)',
+              'macOS (arm64)',
+              'Linux Portable',
+            ];
+
+            const start = Date.now();
+
+            while (Date.now() - start < TIMEOUT) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: OWNER,
+                repo: REPO,
+                head_sha: SHA,
+                per_page: 100,
+              });
+
+              // Pick the most recent run per workflow name (highest run_number)
+              const found = {};
+              for (const run of runs.workflow_runs) {
+                if (!REQUIRED_WORKFLOWS.includes(run.name)) continue;
+                const prev = found[run.name];
+                if (!prev || run.run_number > prev.run_number) {
+                  found[run.name] = run;
+                }
+              }
+
+              const missing = REQUIRED_WORKFLOWS.filter(w => !found[w]);
+              if (missing.length > 0) {
+                core.info(`Waiting for workflows to appear: ${missing.join(', ')}`);
+                await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                continue;
+              }
+
+              // If the most recent run is still in_progress or queued, wait
+              const pending = Object.entries(found)
+                .filter(([_, run]) => run.status !== 'completed')
+                .map(([name, run]) => `${name} (${run.status})`);
+
+              if (pending.length > 0) {
+                core.info(`Waiting for: ${pending.join(', ')}`);
+                await new Promise(r => setTimeout(r, POLL_INTERVAL));
+                continue;
+              }
+
+              // All completed — check for failures (ignore cancelled, only fail on failure)
+              const failed = Object.entries(found)
+                .filter(([_, run]) => run.conclusion !== 'success' && run.conclusion !== 'skipped')
+                .map(([name, run]) => `${name} (${run.conclusion})`);
+
+              if (failed.length > 0) {
+                core.setFailed(`Workflows failed: ${failed.join(', ')}`);
+                return;
+              }
+
+              core.info('All packaging workflows completed successfully.');
+              return;
+            }
+
+            core.setFailed('Timed out waiting for packaging workflows.');
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-artifacts
+          merge-multiple: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.run_id }}
+
+      - name: Download artifacts from packaging workflows
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const SHA = context.sha;
+            const WORKFLOW_NAMES = ['Linux (x86_64)', 'Windows (x64)', 'macOS (arm64)', 'Linux Portable'];
+
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: SHA,
+              per_page: 100,
+            });
+
+            // Pick most recent successful run per workflow
+            const best = {};
+            for (const run of runs.workflow_runs) {
+              if (!WORKFLOW_NAMES.includes(run.name)) continue;
+              if (run.status !== 'completed' || run.conclusion !== 'success') continue;
+              const prev = best[run.name];
+              if (!prev || run.run_number > prev.run_number) {
+                best[run.name] = run;
+              }
+            }
+
+            for (const run of Object.values(best)) {
+              core.info(`Downloading artifacts from: ${run.name} (run ${run.id})`);
+              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+
+              for (const artifact of artifacts.artifacts) {
+                if (!artifact.name.startsWith('release-')) continue;
+
+                core.info(`  Downloading: ${artifact.name}`);
+                const download = await github.rest.actions.downloadArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                  archive_format: 'zip',
+                });
+
+                const dir = path.join('release-artifacts', artifact.name);
+                fs.mkdirSync(dir, { recursive: true });
+
+                const zipPath = path.join(dir, '_artifact.zip');
+                fs.writeFileSync(zipPath, Buffer.from(download.data));
+
+                await exec.exec('unzip', ['-o', zipPath, '-d', dir]);
+                fs.unlinkSync(zipPath);
+              }
+            }
+
+      - name: List release artifacts
+        run: |
+          echo "=== Package artifacts ==="
+          find release-artifacts -type f 2>/dev/null | sort || echo "(none)"
+
+      - name: Deduplicate and flatten release artifacts
+        run: |
+          mkdir -p release-files
+          # Flatten all artifacts into one directory, skipping duplicates
+          find release-artifacts -type f | while read f; do
+            base=$(basename "$f")
+            if [ ! -f "release-files/${base}" ]; then
+              cp "$f" "release-files/${base}"
+            else
+              echo "Skipping duplicate: ${base}"
+            fi
+          done
+          echo "=== Release files ==="
+          ls -1 release-files/ | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "gst-projectm ${{ github.ref_name }}"
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'pre') }}
+          generate_release_notes: true
+          files: |
+            release-files/*
+          body: |
+            ## Variants
+
+            Each binary package is available in three variants:
+            - **static-gl** — projectM is statically linked with desktop OpenGL support. Self-contained, no external projectM libraries needed.
+            - **static-gles** — projectM is statically linked with OpenGL ES support. Self-contained, no external projectM libraries needed.
+            - **dynamic** — projectM is dynamically linked. You must install projectM (>= 4.1.0) separately and ensure the shared libraries are available at runtime. Works with either GL or GLES. See [projectM releases](https://github.com/projectM-visualizer/projectm).
+
+            Only one variant can be installed at a time — they all provide the same GStreamer plugin.
+
+            Source packages (DEB source, SRPM) for the static variant include a build-time switch to select GL or GLES.
+
+            ## Installation
+
+            ### Windows (x64)
+            1. Download the `.zip` for your preferred variant
+            2. Copy `gstprojectm.dll` to `%USERPROFILE%\.gstreamer\1.0\plugins\`
+            3. Set `GST_PLUGIN_PATH`:
+               ```powershell
+               [Environment]::SetEnvironmentVariable("GST_PLUGIN_PATH", "$Env:USERPROFILE\.gstreamer\1.0\plugins", "User")
+               ```
+
+            ### Ubuntu / Debian (x86_64)
+            ```bash
+            # Static with desktop GL:
+            sudo apt install ./gstreamer1.0-projectm-static-gl_*.deb
+            # — or — Static with GLES:
+            sudo apt install ./gstreamer1.0-projectm-static-gles_*.deb
+            # — or — Dynamic (requires projectM installed separately):
+            sudo apt install ./gstreamer1.0-projectm-dynamic_*.deb
+            ```
+
+            To rebuild from source with a specific GL API:
+            ```bash
+            # Default (desktop GL):
+            dpkg-buildpackage
+            # OpenGL ES:
+            dpkg-buildpackage -eENABLE_GLES=ON
+            ```
+
+            ### Fedora / RHEL (x86_64)
+            ```bash
+            # Static with desktop GL:
+            sudo rpm -i gstreamer1-projectm-static-gl-*.rpm
+            # — or — Static with GLES:
+            sudo rpm -i gstreamer1-projectm-static-gles-*.rpm
+            # — or — Dynamic (requires projectM installed separately):
+            sudo rpm -i gstreamer1-projectm-dynamic-*.rpm
+            ```
+
+            To rebuild from source RPM with a specific GL API:
+            ```bash
+            # Default (desktop GL):
+            rpmbuild --rebuild gstreamer1-projectm-static-*.src.rpm
+            # OpenGL ES:
+            rpmbuild --rebuild --define 'enable_gles ON' gstreamer1-projectm-static-*.src.rpm
+            ```
+
+            ### macOS (arm64)
+            1. Download the `.tar.gz` for your preferred variant
+            2. Copy `lib/gstreamer-1.0/libgstprojectm.dylib` to your GStreamer plugin directory
+
+            ### Linux Portable — Flatpak (x86_64)
+            Self-contained `gst-launch-1.0` bundle with projectM plugin and GStreamer. Licensed under GPL-2.0+ (combined work includes GPL GStreamer plugins).
+            ```bash
+            flatpak install gst-projectm-*-flatpak-x86_64.flatpak
+            flatpak run org.projectmvisualizer.GstLaunch
+            ```
+
+            ### Linux Portable — AppImage (x86_64)
+            Single-file executable bundling `gst-launch-1.0` with projectM plugin and GStreamer. Licensed under GPL-2.0+ (combined work includes GPL GStreamer plugins).
+            ```bash
+            chmod +x gst-projectm-*-x86_64.AppImage
+            ./gst-projectm-*-x86_64.AppImage
+            ```
+
+            ### Build from Source
+            Download the source archive from the **Source code** links above, then:
+            ```bash
+            cd gst-projectm-*/
+            cmake -G Ninja -S . -B build
+            cmake --build build
+            ```
+
+            ### Verify
+            ```
+            gst-inspect-1.0 projectm
+            ```

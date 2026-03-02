@@ -1,117 +1,72 @@
-## Building on OSX
+# macOS
 
-**HASNT BEEN TESTED, IF SOMETHING IS WRONG PLEASE SUBMIT A PR WITH FIXES**
+For plugin properties and presets/textures, see the [main README](../README.md).
+
+## Installing Pre-built Packages
+
+Download the `.tar.gz` for your preferred variant from [GitHub Releases](https://github.com/projectM-visualizer/gst-projectm/releases):
+
+- **static-gl** — desktop OpenGL (recommended)
+- **static-gles** — OpenGL ES
+- **dynamic** — requires [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.1.0) installed separately
+
+```bash
+tar xzf gstprojectm-*-macos-arm64-static-gl.tar.gz
+
+# Homebrew GStreamer:
+cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.so \
+  $(brew --prefix)/lib/gstreamer-1.0/
+
+# — or — GStreamer.framework:
+cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.so \
+  /Library/Frameworks/GStreamer.framework/Versions/1.0/lib/gstreamer-1.0/
+```
+
+### Verify
+
+```bash
+gst-inspect-1.0 projectm
+```
+
+## Building from Source
 
 ### Prerequisites
 
-* [Git](https://git-scm.com/download/win)
-* [Ninja](https://github.com/ninja-build/ninja)
-* [CMake](https://cmake.org/download/) (3.8 or higher)
-* [Brew](https://brew.sh/)
-* [GStreamer](https://gstreamer.freedesktop.org/download/) (1.16 or higher)
-* [ProjectM](https://github.com/projectM-visualizer/projectm) (4.0 or higher)
+* Git, CMake (>= 3.8), Ninja
+* [Homebrew](https://brew.sh/)
+* GStreamer (>= 1.16) — `brew install gstreamer`
+* [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.0)
 
-### Building
-
-1. Download (or clone, if git installed) the repository
+### Build
 
 ```bash
 git clone https://github.com/projectM-visualizer/gst-projectm.git
-``` 
+cd gst-projectm
 
-2. Setup
-
-```bash
-./setup.sh
-# OR
-./setup.sh --auto # Skips prompts by using default options
+./setup.sh --auto
+export PROJECTM_ROOT=/path/to/projectm
+./build.sh --auto
 ```
 
-3. Set Environment Variables
+### Install
 
-- PROJECTM_ROOT - Path to built projectM directory
-
-```bash
-echo "export PROJECTM_ROOT=YOUR_PATH_HERE" >> ~/.bashrc
-echo "" >> ~/.bashrc
-source ~/.bashrc
-# OR
-echo "export PROJECTM_ROOT=YOUR_PATH_HERE" >> ~/.zshrc
-echo "" >> ~/.zshrc
-source ~/.zshrc
-# OR
-echo "export PROJECTM_ROOT=YOUR_PATH_HERE" >> ~/.zprofile
-echo "" >> ~/.zprofile
-source ~/.zprofile
-# OR
-echo "export PROJECTM_ROOT=YOUR_PATH_HERE" >> ~/.bash_profile
-echo "" >> ~/.bash_profile
-source ~/.bash_profile
-```
-
-4. Run build script
-
-```bash
-./build.sh
-
-./build.sh --auto # Skips prompts by using default options
-```
-
-### Installing
-
-#### Automatic
-
-The build script will ask if you want to install the plugin.
-
-#### Manual
-
-1. Create GStreamer plugins directory.
+The build script offers to install automatically. To install manually:
 
 ```bash
 mkdir -p $HOME/.local/share/gstreamer-1.0/plugins/
+cp dist/libgstprojectm.so $HOME/.local/share/gstreamer-1.0/plugins/
+export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/
 ```
 
-2. Copy the built plugin to the plugins directory.
+Add the `GST_PLUGIN_PATH` export to your shell profile to persist it.
+
+### Test
 
 ```bash
-mv "dist/libgstprojectm.so" "$HOME/.local/share/gstreamer-1.0/plugins/libgstprojectm.so"
-```
-
-3. Set GST_PLUGIN_PATH environment variable to the plugins directory.
-
-```bash
-echo "export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/" >> ~/.bashrc
-echo "" >> ~/.bashrc
-source ~/.bashrc
-# OR
-echo "export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/" >> ~/.zshrc
-echo "" >> ~/.zshrc
-source ~/.zshrc
-# OR
-echo "export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/" >> ~/.zprofile
-echo "" >> ~/.zprofile
-source ~/.zprofile
-# OR
-echo "export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/" >> ~/.bash_profile
-echo "" >> ~/.bash_profile
-source ~/.bash_profile
-```
-
-### Using
-
-To utilize the plugin with the example, please install GStreamer
-
-```bash
-gst-launch-1.0 audiotestsrc ! queue ! audioconvert ! projectm ! "video/x-raw,width=512,height=512,framerate=60/1" ! videoconvert ! xvimagesink sync=false
-```
-
-### Testing
-
-```bash
-./test.sh --inspect # Inspect the plugin
-./test.sh --audio # Test the plugin with audio
-./test.sh --preset # Test the plugin with a preset
-./test.sh --properties # Test the plugin with properties
-./test.sh --output-video # Test the plugin with video output (video only)
-./test.sh --encode-output-video # Test the plugin with encoded video output (audio/video)
+./test.sh --inspect               # Inspect the plugin
+./test.sh --audio                 # Test with audio
+./test.sh --preset                # Test with a preset
+./test.sh --properties            # Test with properties
+./test.sh --output-video          # Test with video output
+./test.sh --encode-output-video   # Test with encoded video output
 ```
