@@ -153,8 +153,8 @@ Pass `gst-launch-1.0` pipeline arguments directly:
 flatpak run org.projectmvisualizer.GstLaunch \
   audiotestsrc ! queue ! audioconvert \
   ! projectm preset=/path/to/presets texture-dir=/path/to/textures preset-duration=5 \
-  ! "video/x-raw,width=1920,height=1080,framerate=60/1" \
-  ! videoconvert ! autovideosink sync=false
+  ! "video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1" \
+  ! glimagesink
 ```
 
 Note: the Flatpak sandbox has read-only access to your home directory. Place presets and textures under your home directory so the bundle can access them.
@@ -176,8 +176,8 @@ chmod +x gst-projectm-*-x86_64.AppImage
 ./gst-projectm-*-gl-x86_64.AppImage \
   audiotestsrc ! queue ! audioconvert \
   ! projectm preset=/path/to/presets preset-duration=5 \
-  ! "video/x-raw,width=1920,height=1080,framerate=60/1" \
-  ! videoconvert ! autovideosink sync=false
+  ! "video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1" \
+  ! glimagesink
 ```
 
 AppImages are available for multiple GStreamer versions (e.g. 1.24.x, 1.28.x). Choose the version that matches your needs.
