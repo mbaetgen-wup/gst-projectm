@@ -154,7 +154,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gst-projectm-osx-arm64-${{ matrix.variant }}-latest
-          path: build/libgstprojectm.dylib
+          path: build/libgstprojectm.so
 
       # ── Package (tag pushes only) ──────────────────────────────────
       - name: Create Package
@@ -166,7 +166,7 @@ jobs:
           PKG_NAME="gstprojectm-${VERSION}-macos-arm64-${VARIANT}"
           mkdir -p "${PKG_NAME}/lib/gstreamer-1.0"
 
-          cp build/libgstprojectm.dylib "${PKG_NAME}/lib/gstreamer-1.0/"
+          cp build/libgstprojectm.so "${PKG_NAME}/lib/gstreamer-1.0/"
           cp LICENSE "${PKG_NAME}/"
 
           if [ "${VARIANT}" = "static-gl" ]; then
@@ -186,10 +186,10 @@ jobs:
           ${VARIANT_NOTE}
 
           Installation (Homebrew GStreamer):
-            cp lib/gstreamer-1.0/libgstprojectm.dylib \$(brew --prefix)/lib/gstreamer-1.0/
+            cp lib/gstreamer-1.0/libgstprojectm.so \$(brew --prefix)/lib/gstreamer-1.0/
 
           Installation (GStreamer.framework):
-            cp lib/gstreamer-1.0/libgstprojectm.dylib \\
+            cp lib/gstreamer-1.0/libgstprojectm.so \\
               /Library/Frameworks/GStreamer.framework/Versions/1.0/lib/gstreamer-1.0/
 
           Verify: gst-inspect-1.0 projectm
