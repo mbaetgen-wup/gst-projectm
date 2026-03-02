@@ -78,7 +78,24 @@ jobs:
       # RPM: { "artifact", "container", "build_tag", "arch" }
       distros_deb: ${{ steps.set.outputs.distros_deb }}
       distros_rpm: ${{ steps.set.outputs.distros_rpm }}
+      # Variant lists (narrowed on PRs to dynamic only).
+      plugin_variants: ${{ steps.variants.outputs.plugin_variants }}
+      gl_variants: ${{ steps.variants.outputs.gl_variants }}
+      build_static: ${{ steps.variants.outputs.build_static }}
     steps:
+      - name: Determine build variants
+        id: variants
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'plugin_variants=["dynamic"]' >> $GITHUB_OUTPUT
+            echo 'gl_variants=[]' >> $GITHUB_OUTPUT
+            echo 'build_static=false' >> $GITHUB_OUTPUT
+          else
+            echo 'plugin_variants=["static-gl","static-gles","dynamic"]' >> $GITHUB_OUTPUT
+            echo 'gl_variants=["gl","gles"]' >> $GITHUB_OUTPUT
+            echo 'build_static=true' >> $GITHUB_OUTPUT
+          fi
+
       - name: Normalize distro families
         id: set
         shell: bash
@@ -146,11 +163,12 @@ jobs:
   build-projectm-deb:
     name: Build ProjectM (${{ matrix.image.tag }}, static-${{ matrix.gl_variant }})
     needs: [configure]
+    if: needs.configure.outputs.build_static == 'true'
     runs-on: ${{ matrix.image.runner }}
     strategy:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.build_images_deb) }}
-        gl_variant: [gl, gles]
+        gl_variant: ${{ fromJSON(needs.configure.outputs.gl_variants) }}
         include:
           - gl_variant: gl
             enable_gles: "OFF"
@@ -209,14 +227,14 @@ jobs:
   build-projectm-rpm:
     name: Build ProjectM (${{ matrix.image.tag }}, static-${{ matrix.gl_variant }})
     needs: [configure]
-    if: ${{ needs.configure.outputs.build_images_rpm != '[]' }}
+    if: ${{ needs.configure.outputs.build_images_rpm != '[]' && needs.configure.outputs.build_static == 'true' }}
     runs-on: ubuntu-latest
     container:
       image: ${{ matrix.image.container }}
     strategy:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.build_images_rpm) }}
-        gl_variant: [gl, gles]
+        gl_variant: ${{ fromJSON(needs.configure.outputs.gl_variants) }}
         include:
           - gl_variant: gl
             enable_gles: "OFF"
@@ -354,7 +372,7 @@ jobs:
     strategy:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.build_images_deb) }}
-        variant: [static-gl, static-gles, dynamic]
+        variant: ${{ fromJSON(needs.configure.outputs.plugin_variants) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -439,7 +457,7 @@ jobs:
     strategy:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.build_images_rpm) }}
-        variant: [static-gl, static-gles, dynamic]
+        variant: ${{ fromJSON(needs.configure.outputs.plugin_variants) }}
     steps:
       - name: Install build dependencies
         run: dnf install -y git cmake ninja-build gcc gcc-c++ pkgconfig patchelf mesa-libGL-devel mesa-libEGL-devel mesa-libGLES-devel gstreamer1-devel gstreamer1-plugins-base-devel glib2-devel
