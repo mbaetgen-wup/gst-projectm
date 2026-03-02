@@ -32,9 +32,11 @@
     <li><a href="#presets-and-textures">Presets and Textures</a></li>
     <li><a href="#release-packages">Release Packages</a></li>
     <li><a href="#usage-examples">Usage Examples</a></li>
+    <li><a href="#technical-details">Technical Details</a></li>
+    <li><a href="#logging-and-debugging">Logging and Debugging</a></li>
     <li><a href="#easy-audio-to-video-conversion">Easy Audio to Video Conversion (Docker)</a></li>
     <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
+    <li><a href="#licensing">Licensing</a></li>
     <li><a href="#support">Support</a></li>
     <li><a href="#contact">Contact</a></li>
   </ol>
@@ -47,6 +49,8 @@
 ## Getting Started
 
 **gst-projectm** is a [GStreamer](https://gstreamer.freedesktop.org/) plugin that takes an audio stream as input and produces a video stream of real-time [projectM](https://github.com/projectM-visualizer/projectm) visualizations. It is not a standalone application — it is a plugin element (`projectm`) that runs inside any GStreamer pipeline, which means it works from the command line with `gst-launch-1.0`, inside applications that use GStreamer, in Docker containers, or anywhere GStreamer runs.
+
+The plugin renders directly to OpenGL textures via FBO and outputs `video/x-raw(memory:GLMemory)` buffers that stay in GPU memory. Use `glimagesink` for zero-copy display, or `gldownload` when you need to hand off to CPU-side elements like video encoders.
 
 There are several ways to get the plugin, depending on what you need:
 
@@ -82,11 +86,13 @@ The `projectm` element accepts these properties, set in a pipeline with `propert
 | `preset-locked` | boolean | `false` | Lock on the current preset, disabling automatic switching. |
 | `enable-playlist` | boolean | `true` | Enable playlist-based preset switching. |
 | `shuffle-presets` | boolean | `true` | Randomize preset order. Requires `enable-playlist=true`. |
+| `is-live` | string | `auto` | Rendering mode: `auto` detects live pipelines automatically, `true` forces real-time rendering (may drop frames), `false` forces offline rendering (as fast as possible). Auto-detection is not supported on Windows or GStreamer < 1.24; set explicitly in those cases. |
+| `min-fps` | string | `1/1` | Lower bound for adaptive FPS in live pipelines, as a fraction (e.g. `15/1`). When rendering can't keep up with the pipeline framerate, the plugin reduces its target FPS down to this floor. Only applies when `is-live=true`. |
 
-Output video resolution and framerate are set through GStreamer caps, not plugin properties:
+Output video resolution and framerate are set through GStreamer caps, not plugin properties. The plugin outputs `video/x-raw(memory:GLMemory)` in RGBA format:
 
 ```
-... ! projectm ! "video/x-raw,width=1920,height=1080,framerate=60/1" ! ...
+... ! projectm ! "video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1" ! ...
 ```
 
 Run `gst-inspect-1.0 projectm` for the full listing from your installed version.
@@ -112,8 +118,8 @@ Then pass the paths to the plugin:
 ```bash
 gst-launch-1.0 audiotestsrc ! queue ! audioconvert \
   ! projectm preset=~/projectM-presets texture-dir=~/projectM-textures preset-duration=10 \
-  ! "video/x-raw,width=1920,height=1080,framerate=60/1" \
-  ! videoconvert ! autovideosink sync=false
+  ! "video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1" \
+  ! glimagesink
 ```
 
 You can also use any directory of `.milk` preset files, including your own.
@@ -126,11 +132,11 @@ Pre-built packages are available on the [GitHub Releases](https://github.com/pro
 
 ### Package Variants
 
-| Variant | Description |
-| --- | --- |
+| Variant | Description                                                                                                                         |
+| --- |-------------------------------------------------------------------------------------------------------------------------------------|
 | **static-gl** | projectM statically linked with desktop OpenGL. Self-contained — no external projectM needed. Recommended for most desktop systems. |
-| **static-gles** | projectM statically linked with OpenGL ES. For embedded or GLES-only environments. |
-| **dynamic** | projectM **not** included. Requires [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.1.0) installed separately. |
+| **static-gles** | projectM statically linked with OpenGL ES. For embedded or GLES-only environments.                                                  |
+| **dynamic** | projectM **not** included. Requires [projectM](https://github.com/projectM-visualizer/projectm) (>= 4.2.0) installed separately.    |
 
 Only one variant can be installed at a time — they conflict with each other.
 
@@ -154,38 +160,98 @@ These examples assume the plugin is installed and presets/textures have been dow
 ### Live Audio Visualization
 
 ```bash
-# Visualize a test tone
+# Visualize a test tone (zero-copy GL display)
 gst-launch-1.0 audiotestsrc ! queue ! audioconvert \
   ! projectm preset=~/projectM-presets texture-dir=~/projectM-textures preset-duration=5 \
-  ! "video/x-raw,width=1920,height=1080,framerate=60/1" \
-  ! videoconvert ! autovideosink sync=false
+  ! "video/x-raw(memory:GLMemory),width=1920,height=1080,framerate=60/1" \
+  ! glimagesink
 
 # Visualize PipeWire/PulseAudio system audio
 gst-launch-1.0 pipewiresrc ! queue ! audioconvert \
   ! projectm preset=~/projectM-presets preset-duration=5 \
-  ! "video/x-raw,width=2048,height=1440,framerate=60/1" \
-  ! videoconvert ! autovideosink sync=false
+  ! "video/x-raw(memory:GLMemory),width=2048,height=1440,framerate=60/1" \
+  ! glimagesink
 ```
 
 ### Audio to Video Conversion
+
+For offline (faster-than-real-time) conversion, use `gldownload` to transfer frames from GPU to CPU memory before encoding:
 
 ```bash
 gst-launch-1.0 -e \
   filesrc location=input.mp3 ! decodebin ! tee name=t \
     t. ! queue ! audioconvert ! audioresample \
-      ! capsfilter caps="audio/x-raw,format=F32LE,channels=2,rate=44100" \
+      ! "audio/x-raw,format=F32LE,channels=2,rate=44100" \
       ! avenc_aac bitrate=320000 ! queue ! mux. \
     t. ! queue ! audioconvert \
       ! projectm preset=~/projectM-presets texture-dir=~/projectM-textures \
-          preset-duration=6 mesh-size=1024,576 \
-      ! identity sync=false ! videoconvert ! videorate \
-      ! "video/x-raw,framerate=60/1,width=3840,height=2160" \
+          preset-duration=6 mesh-size=1024,576 is-live=false \
+      ! "video/x-raw(memory:GLMemory),framerate=60/1,width=3840,height=2160" \
+      ! gldownload ! videoconvert ! videorate \
       ! x264enc bitrate=50000 key-int-max=200 speed-preset=veryslow \
       ! "video/x-h264,stream-format=avc,alignment=au" ! queue ! mux. \
   mp4mux name=mux ! filesink location=output.mp4
 ```
 
 Some elements (x264enc, avenc_aac) require additional GStreamer plugin packages on your system (e.g. `gstreamer1.0-plugins-ugly`, `gstreamer1.0-libav`).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Internals
+
+### OpenGL Rendering and Buffer Handling
+
+projectM output is rendered to OpenGL textures via Frame Buffer Objects (FBO). Textures are pooled and reused across frames. Each rendered texture becomes a GStreamer video buffer pushed downstream — all video buffers stay in GPU memory as `video/x-raw(memory:GLMemory)`. Use `glimagesink` for zero-copy display, or `gldownload` to transfer to system memory for CPU-side elements like video encoders.
+
+### Timing and Synchronization
+
+The plugin synchronizes rendering to the GStreamer pipeline clock using the audio presentation timestamp (PTS) as the leading reference. Pipeline caps control the desired video framerate. The render loop is push-based to conform with GStreamer's pipeline timing model and to enable faster-than-real-time rendering. A fixed number of audio samples is consumed per video frame — for example, 735 samples per frame at 44.1 kHz yields approximately 60 FPS.
+
+Live pipelines are auto-detected if GStreamer supports it (not supported on Windows or GStreamer < 1.24). For those cases, set `is-live=true` explicitly. The default mode is offline rendering (`is-live=false`), which renders as fast as possible. In live mode, frames may be dropped or the rendering FPS may be reduced adaptively if frame rendering cannot keep up with the pipeline framerate.
+
+Video frame PTS offset is derived from the first audio buffer PTS or segment event, plus accumulated samples, to align video timing with the audio stream.
+
+| Timing Source | Origin | Mode | Purpose |
+| --- | --- | --- | --- |
+| Audio Timestamps | Audio input | All | Determine video timing and sync |
+| Sample Rate / Pipeline FPS | Audio input / Caps | All | Number of audio samples per frame and target FPS |
+| Segment Info | Segment event | All | Running time and playback position for PTS offsets |
+| QoS Feedback | QoS event | Live | Skip outdated frames to correct sync with downstream |
+| Render Frame Drop | Render loop | Live | Drop frames that cannot be rendered in time |
+| GL Frame Render Duration | Render loop | Live | EMA of frame render duration; adjusts plugin target FPS when rendering consistently exceeds the real-time budget |
+| Latency Event | Render loop | Live | Inform upstream of latency changes from adaptive FPS |
+| Buffer Push Clock Jitter | Render loop | Live | EMA of source pad push jitter from the scheduler; added as a correction to buffer PTS |
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Logging and Debugging
+
+The plugin uses GStreamer's standard logging system. Set the `GST_DEBUG` environment variable to control verbosity per category. The general syntax is `category:level`, where levels range from 1 (errors only) to 7 (full trace). Multiple categories are comma-separated.
+
+### Quick Start
+
+```bash
+# See errors and warnings from the plugin
+GST_DEBUG=gstprojectm:3,projectm_base:3 gst-launch-1.0 ...
+
+# Debug frame drops and adaptive FPS in live pipelines
+GST_DEBUG=renderbuffer:5,pmaudiovisualizer:5 gst-launch-1.0 ...
+
+# Full trace (very verbose)
+GST_DEBUG=gstprojectm:7,projectm_base:7,glbaseaudiovisualizer:7,pmaudiovisualizer:7,renderbuffer:7,pushbuffer:7 gst-launch-1.0 ...
+```
+
+### Plugin Log Categories
+
+| Category | Source | What it logs |
+| --- | --- | --- |
+| `projectm_base` | gstprojectmbase.c | projectM instance lifecycle, property changes, preset loading, and **all log output from the projectM library itself** (errors, warnings, info, debug from libprojectM are forwarded through this category) |
+| `gstprojectm` | gstprojectm.c | Top-level plugin element: GL start/stop, per-frame render dispatch, audio/video caps |
+| `glbaseaudiovisualizer` | gstglbaseaudiovisualizer.c | GL context discovery, FBO setup, render mode detection (live vs offline), caps changes, state transitions |
+| `pmaudiovisualizer` | gstpmaudiovisualizer.c | Audio/video timing, QoS frame skipping, segment events, latency negotiation, buffer pool management |
+| `renderbuffer` | renderbuffer.c | Render slot scheduling, frame drop events (eviction and timeout), adaptive FPS (EMA adjustments), render duration monitoring |
+| `pushbuffer` | pushbuffer.c | Buffer push scheduling, clock wait jitter tracking |
+| `buffercleanup` | bufferdisposal.c | GL buffer disposal lifecycle |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -270,7 +336,7 @@ Mischa (Discord: mish) - [@revmischa](https://github.com/revmischa)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-<!----------------------------------------------------------------------->
+<!------------------------------------------------------------------------->
 <!-- MARKDOWN LINKS & IMAGES -->
 
 [contributors-shield]: https://img.shields.io/github/contributors/projectM-visualizer/gst-projectm.svg?style=for-the-badge

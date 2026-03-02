@@ -32,20 +32,19 @@
 #ifndef __GST_GL_BASE_AUDIO_VISUALIZER_H__
 #define __GST_GL_BASE_AUDIO_VISUALIZER_H__
 
+#include "gstpmaudiovisualizer.h"
+
 #include <gst/gl/gstgl_fwd.h>
-#include <gst/pbutils/gstaudiovisualizer.h>
-#include <gst/video/video-info.h>
-#include <stdint.h>
 
 typedef struct _GstGLBaseAudioVisualizer GstGLBaseAudioVisualizer;
 typedef struct _GstGLBaseAudioVisualizerClass GstGLBaseAudioVisualizerClass;
 typedef struct _GstGLBaseAudioVisualizerPrivate GstGLBaseAudioVisualizerPrivate;
+typedef struct _GstAVRenderParams GstAVRenderParams;
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(GstGLBaseAudioVisualizer, gst_object_unref)
 
 G_BEGIN_DECLS
 
-GST_GL_API
 GType gst_gl_base_audio_visualizer_get_type(void);
 
 #define GST_TYPE_GL_BASE_AUDIO_VISUALIZER                                      \
@@ -65,51 +64,153 @@ GType gst_gl_base_audio_visualizer_get_type(void);
                              GstGLBaseAudioVisualizerClass))
 
 /**
+ * Plugin mode of operation type.
+ */
+typedef enum {
+  /**
+   * Real-time / live rendering.
+   */
+  GST_GL_BASE_AUDIO_VISUALIZER_REALTIME,
+
+  /**
+   * Faster-than-real-time rendering.
+   */
+  GST_GL_BASE_AUDIO_VISUALIZER_OFFLINE,
+
+  /**
+   * Auto-detect if pipeline is live.
+   */
+  GST_GL_BASE_AUDIO_VISUALIZER_AUTO
+} GstGLBaseAudioVisualizerMode;
+
+/**
  * GstGLBaseAudioVisualizer:
  * @display: the currently configured #GstGLDisplay
  * @context: the currently configured #GstGLContext
  *
- * The parent instance type of a base GL Audio Visualizer.
+ * The parent instance type of base GL Audio Visualizer.
  */
 struct _GstGLBaseAudioVisualizer {
-  GstAudioVisualizer parent;
+  GstPMAudioVisualizer parent;
 
   /*< public >*/
   GstGLDisplay *display;
   GstGLContext *context;
 
-  /*< private >*/
-  gpointer _padding[GST_PADDING];
+  /**
+   * Minimum FPS numerator setting for EMA.
+   */
+  gint min_fps_n;
+
+  /**
+   * Minimum FPS denominator setting for EMA.
+   */
+  gint min_fps_d;
+
+  /**
+   * Operation mode property.
+   */
+  GstGLBaseAudioVisualizerMode is_live;
 
   GstGLBaseAudioVisualizerPrivate *priv;
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
 };
 
 /**
  * GstGLBaseAudioVisualizerClass:
  * @supported_gl_api: the logical-OR of #GstGLAPI's supported by this element
- * @gl_start: called in the GL thread to setup the element GL state.
+ * @gl_start: called in the GL thread to set up the element GL state.
  * @gl_stop: called in the GL thread to clean up the element GL state.
  * @gl_render: called in the GL thread to fill the current video texture.
  * @setup: called when the format changes (delegate from
- * GstAudioVisualizer.setup)
+ * GstPMAudioVisualizer.setup)
  *
  * The base class for OpenGL based audio visualizers.
- *
+ * Extends GstPMAudioVisualizer to add GL rendering callbacks.
+ * Handles GL context and render buffers.
  */
 struct _GstGLBaseAudioVisualizerClass {
-  GstAudioVisualizerClass parent_class;
+  GstPMAudioVisualizerClass parent_class;
 
   /*< public >*/
+  /**
+   * Supported OpenGL API flags.
+   */
   GstGLAPI supported_gl_api;
+
+  /**
+   * Virtual function called from gl thread once the gl context can be used for
+   * initializing gl resources.
+   */
   gboolean (*gl_start)(GstGLBaseAudioVisualizer *glav);
+
+  /**
+   * Virtual function called from gl thread when gl context is being closed for
+   * gl resource clean up.
+   */
   void (*gl_stop)(GstGLBaseAudioVisualizer *glav);
-  gboolean (*gl_render)(GstGLBaseAudioVisualizer *glav, GstBuffer *audio,
-                        GstVideoFrame *video);
+
+  /**
+   * Virtual function called when caps have been set for the pipeline.
+   */
   gboolean (*setup)(GstGLBaseAudioVisualizer *glav);
+
+  /* Virtual function called to render each frame, in_audio is optional. */
+  gboolean (*fill_gl_memory)(GstAVRenderParams *render_data);
+
+  /*< private >*/
+  gpointer _padding[GST_PADDING];
+};
+
+/**
+ * Parameter struct for rendering calls.
+ */
+struct _GstAVRenderParams {
+
+  /**
+   * Context plugin.
+   */
+  GstGLBaseAudioVisualizer *plugin;
+
+  /**
+   * Framebuffer to use for rendering.
+   */
+  GstGLFramebuffer *fbo;
+
+  /**
+   * Rendering target GL memory.
+   */
+  GstGLMemory *mem;
+
+  /**
+   * Audio data for frame.
+   */
+  GstBuffer *in_audio;
+
+  /**
+   * Current buffer presentation timestamp.
+   */
+  GstClockTime pts;
+
   /*< private >*/
   gpointer _padding[GST_PADDING];
 };
 
 G_END_DECLS
+
+/**
+ * Convert a string ("true", "false", "auto") to a GstGLBaseAudioVisualizerMode.
+ */
+GstGLBaseAudioVisualizerMode
+gst_gl_base_audio_visualizer_mode_from_string(const gchar *str);
+
+/**
+ * Convert a GstGLBaseAudioVisualizerMode to a string ("true", "false", "auto").
+ * Returns a static string; do not free.
+ */
+const gchar *
+gst_gl_base_audio_visualizer_mode_to_string(GstGLBaseAudioVisualizerMode mode);
 
 #endif /* __GST_GL_BASE_AUDIO_VISUALIZER_H__ */

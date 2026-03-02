@@ -3,25 +3,21 @@
 
 #include <glib.h>
 
-#include "plugin.h"
-
 G_BEGIN_DECLS
 
 /**
  * @brief Get audio sink caps based on the given type.
  *
- * @param type - The type of audio caps to retrieve.
  * @return The audio caps format string.
  */
-const gchar *get_audio_sink_cap(unsigned int type);
+const gchar *get_audio_sink_cap();
 
 /**
  * Get video source caps based on the given type.
  *
- * @param type - The type of video caps to retrieve.
  * @return The video caps format string.
  */
-const gchar *get_video_src_cap(unsigned int type);
+const gchar *get_video_src_cap();
 
 G_END_DECLS
 
