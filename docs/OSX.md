@@ -14,11 +14,11 @@ Download the `.tar.gz` for your preferred variant from [GitHub Releases](https:/
 tar xzf gstprojectm-*-macos-arm64-static-gl.tar.gz
 
 # Homebrew GStreamer:
-cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.dylib \
+cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.so \
   $(brew --prefix)/lib/gstreamer-1.0/
 
 # — or — GStreamer.framework:
-cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.dylib \
+cp gstprojectm-*/lib/gstreamer-1.0/libgstprojectm.so \
   /Library/Frameworks/GStreamer.framework/Versions/1.0/lib/gstreamer-1.0/
 ```
 
@@ -54,7 +54,7 @@ The build script offers to install automatically. To install manually:
 
 ```bash
 mkdir -p $HOME/.local/share/gstreamer-1.0/plugins/
-cp dist/libgstprojectm.dylib $HOME/.local/share/gstreamer-1.0/plugins/
+cp dist/libgstprojectm.so $HOME/.local/share/gstreamer-1.0/plugins/
 export GST_PLUGIN_PATH=$HOME/.local/share/gstreamer-1.0/plugins/
 ```
 
