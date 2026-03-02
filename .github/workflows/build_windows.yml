@@ -48,15 +48,6 @@ jobs:
           ref: ${{ env.PROJECTM_REF }}
           submodules: 'recursive'
 
-      - name: Restore vcpkg cache (PR only)
-        if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v4
-        with:
-          path: C:/vcpkg/installed
-          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            vcpkg-${{ runner.os }}-x64-windows-
-
       - name: Get Hash
         id: git-hash
         run: echo "hash=$(git rev-parse HEAD)-${{ matrix.variant }}v4" >> $Env:GITHUB_OUTPUT
@@ -88,13 +79,6 @@ jobs:
         with:
           name: projectm-windows-${{ matrix.variant }}-latest
           path: install/*
-
-      - name: Save vcpkg cache (push only)
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v4
-        with:
-          path: C:/vcpkg/installed
-          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
   build-plugin:
     name: Build GST Plugin (${{ matrix.variant }})
