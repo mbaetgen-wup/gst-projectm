@@ -13,6 +13,19 @@
 #include <projectM-4/playlist.h>
 #include <projectM-4/projectM.h>
 
+/**
+ * Callback invoked when the projectM preset changes.
+ *
+ * @param preset_name Name/path of the new preset.
+ * @param is_hard_cut TRUE if the preset change was a hard cut.
+ * @param pts The last video presentation timestamp at the time of the change.
+ * @param user_data Caller-supplied context pointer.
+ */
+typedef void (*GstProjectMPresetChangedFunc)(const char *preset_name,
+                                             gboolean is_hard_cut,
+                                             GstClockTime pts,
+                                             gpointer user_data);
+
 G_BEGIN_DECLS
 
 /**
@@ -53,6 +66,19 @@ struct _GstBaseProjectMPrivate {
 
   GstClockTime first_frame_time;
   gboolean first_frame_received;
+
+  /**
+   * Last video pts timestamp, updated each frame.  Protected by projectm_lock.
+   */
+  GstClockTime last_pts;
+
+  /**
+   * Optional callback invoked on preset change.  Set once before gl_start;
+   * read from the projectM callback thread -- no lock needed for the pointer
+   * itself because it is immutable after gl_start.
+   */
+  GstProjectMPresetChangedFunc preset_changed_func;
+  gpointer preset_changed_user_data;
 
   /*< private >*/
   gpointer _padding[GST_PADDING];
@@ -195,6 +221,31 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class);
  */
 gboolean gst_projectm_base_parse_fraction(const gchar *str, gint *numerator,
                                           gint *denominator);
+
+/**
+ * Register a callback that will be invoked every time projectM switches to a
+ * new preset.  Must be called before gst_projectm_base_gl_start().
+ *
+ * @param priv      Plugin priv data.
+ * @param func      Callback function (may be NULL to unregister).
+ * @param user_data Opaque pointer forwarded to @p func.
+ */
+void gst_projectm_base_set_preset_changed_callback(
+    GstBaseProjectMPrivate *priv, GstProjectMPresetChangedFunc func,
+    gpointer user_data);
+
+/**
+ * Pushes a preset changed message to the preset change source pad.
+ *
+ * @param preset_name Name of next preset.
+ * @param is_hard_cut Was the preset change triggered by a hard cut.
+ * @param pts Current presentation timestamp.
+ * @param plugin Parent plugin.
+ * @param pad The JSON text source pad to push to.
+ * @return
+ */
+bool gst_projectm_base_push_preset_change(const char *preset_name, gboolean is_hard_cut, GstClockTime pts, GObject *plugin, GstPad *pad);
+
 
 #define GST_PROJECTM_BASE_LOCK(priv) (g_mutex_lock(&priv->projectm_lock))
 #define GST_PROJECTM_BASE_UNLOCK(priv) (g_mutex_unlock(&priv->projectm_lock))

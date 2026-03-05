@@ -10,6 +10,7 @@
 #include "gstprojectmconfig.h"
 
 #include <gst/gst.h>
+#include <string.h>
 
 GST_DEBUG_CATEGORY_STATIC(gst_projectm_debug);
 #define GST_CAT_DEFAULT gst_projectm_debug
@@ -25,10 +26,19 @@ static void gst_projectm_gl_stop(GstGLBaseAudioVisualizer *glav);
 static gboolean gst_projectm_fill_gl_memory(GstAVRenderParams *render_data);
 static void gst_projectm_class_init(GstProjectMClass *klass);
 static gboolean gst_projectm_setup(GstGLBaseAudioVisualizer *glav);
+static void gst_projectm_on_preset_changed(const char *preset_name,
+                                            gboolean is_hard_cut,
+                                            GstClockTime pts,
+                                            gpointer user_data);
 
 struct _GstProjectMPrivate {
 
   GstBaseProjectMPrivate base;
+
+  /**
+   * Source pad for preset change JSON buffers.
+   */
+  GstPad *preset_srcpad;
 };
 
 G_DEFINE_TYPE_WITH_CODE(GstProjectM, gst_projectm,
@@ -61,6 +71,19 @@ static void gst_projectm_init(GstProjectM *plugin) {
   gst_gl_memory_init_once();
 
   gst_projectm_base_init(&plugin->settings, &plugin->priv->base);
+
+  /* Create the preset change source pad from the template */
+  GstPadTemplate *preset_tmpl = gst_element_class_get_pad_template(
+      GST_ELEMENT_GET_CLASS(plugin), "preset_src");
+  plugin->priv->preset_srcpad =
+      gst_pad_new_from_template(preset_tmpl, "preset_src");
+  gst_pad_use_fixed_caps(plugin->priv->preset_srcpad);
+  gst_pad_set_active(plugin->priv->preset_srcpad, TRUE);
+  gst_element_add_pad(GST_ELEMENT(plugin), plugin->priv->preset_srcpad);
+
+  /* Register the preset change notification so we can push JSON buffers */
+  gst_projectm_base_set_preset_changed_callback(
+      &plugin->priv->base, gst_projectm_on_preset_changed, plugin);
 }
 
 static void gst_projectm_finalize(GObject *object) {
@@ -147,6 +170,21 @@ static void gst_projectm_segment_change(GstPMAudioVisualizer *scope,
   gst_projectm_base_set_segment_pts_offset(&plugin->priv->base, pts_offset);
 }
 
+/**
+ * Called from the projectM preset-switched callback (GL render thread,
+ * projectm_lock held).  Creates a JSON buffer and pushes it on the
+ * preset_src pad.
+ */
+static void gst_projectm_on_preset_changed(const char *preset_name,
+                                            gboolean is_hard_cut,
+                                            GstClockTime pts,
+                                            gpointer user_data) {
+  GstProjectM *plugin = GST_PROJECTM(user_data);
+  GstPad *pad = plugin->priv->preset_srcpad;
+
+  gst_projectm_base_push_preset_change(preset_name, is_hard_cut, pts, (GObject*)plugin, pad);
+}
+
 static void gst_projectm_class_init(GstProjectMClass *klass) {
   GObjectClass *gobject_class = (GObjectClass *)klass;
   GstPMAudioVisualizerClass *parent_scope_class =
@@ -166,6 +204,13 @@ static void gst_projectm_class_init(GstProjectMClass *klass) {
       GST_ELEMENT_CLASS(klass),
       gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS,
                            gst_caps_from_string(audio_sink_caps)));
+
+  /* Preset change source pad: produces JSON text buffers whenever the
+   * active projectM preset changes. */
+  gst_element_class_add_pad_template(
+      GST_ELEMENT_CLASS(klass),
+      gst_pad_template_new("preset_src", GST_PAD_SRC, GST_PAD_ALWAYS,
+                           gst_caps_from_string("application/x-json")));
 
   gst_element_class_set_static_metadata(
       GST_ELEMENT_CLASS(klass), "ProjectM Visualizer", "Generic",

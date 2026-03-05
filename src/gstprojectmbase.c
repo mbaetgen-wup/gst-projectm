@@ -60,10 +60,20 @@ enum {
 #define DEFAULT_MIN_FPS_N 1
 #define DEFAULT_MIN_FPS_D 1
 
+/**
+ * Context passed as user_data to the projectM preset-switched callback so that
+ * we can reach both the playlist handle (for looking up the preset name) and
+ * the base private data (for the notification callback and last_pts).
+ */
+typedef struct _PresetCallbackContext {
+  projectm_playlist_handle playlist;
+  GstBaseProjectMPrivate *priv;
+} PresetCallbackContext;
+
 static gboolean gst_projectm_base_log_preset_change(gpointer preset) {
   GST_INFO("Preset: %s", (char *)preset);
 
-  projectm_free_string((char *)preset);
+  g_free((char *)preset);
 
   return G_SOURCE_REMOVE; // remove after run
 }
@@ -104,14 +114,29 @@ static void gst_projectm_base_handle_preset_change(bool is_hard_cut,
                                                    unsigned int index,
                                                    void *user_data) {
 
+  PresetCallbackContext *ctx = (PresetCallbackContext *)user_data;
+  projectm_playlist_handle playlist = ctx->playlist;
+  GstBaseProjectMPrivate *priv = ctx->priv;
+
+  char *name = projectm_playlist_item(playlist, index);
+
   if (gst_debug_category_get_threshold(gst_projectm_base_debug) >=
       GST_LEVEL_INFO) {
 
-    char *name =
-        projectm_playlist_item((projectm_playlist_handle)user_data, index);
-
-    g_idle_add(gst_projectm_base_log_preset_change, name);
+    /* Log via idle -- use g_strdup because name is freed below */
+    g_idle_add(gst_projectm_base_log_preset_change, g_strdup(name));
   }
+
+  /* Notify the owning element so it can push a buffer on its preset pad.
+   * last_pts is safe to read here because the projectm_lock is already held
+   * by fill_gl_memory_callback (the caller of projectm_opengl_render_frame_fbo
+   * which triggers this callback). */
+  if (priv->preset_changed_func) {
+    priv->preset_changed_func(name, is_hard_cut,
+                              priv->last_pts, priv->preset_changed_user_data);
+  }
+
+  projectm_free_string(name);
 }
 
 /**
@@ -140,7 +165,8 @@ static void *gst_projectm_base_get_proc_address(const char *name,
 }
 
 static GstBaseProjectMInitResult
-projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
+projectm_init(GObject *plugin, GstBaseProjectMPrivate *priv,
+              GstBaseProjectMSettings *settings,
               GstVideoInfo *vinfo) {
 
   GstBaseProjectMInitResult result;
@@ -173,9 +199,12 @@ projectm_init(GObject *plugin, GstBaseProjectMSettings *settings,
                                   settings->shuffle_presets);
 
     // add handler to print preset change
+    PresetCallbackContext *cb_ctx = g_new0(PresetCallbackContext, 1);
+    cb_ctx->playlist = result.ret_playlist;
+    cb_ctx->priv = priv;
     projectm_playlist_set_preset_switched_event_callback(
         result.ret_playlist, gst_projectm_base_handle_preset_change,
-        result.ret_playlist);
+        cb_ctx);
   } else {
     GST_DEBUG_OBJECT(plugin, "Playlist disabled");
   }
@@ -563,6 +592,9 @@ void gst_projectm_base_init(GstBaseProjectMSettings *settings,
 
   priv->first_frame_time = 0;
   priv->first_frame_received = FALSE;
+  priv->last_pts = GST_CLOCK_TIME_NONE;
+  priv->preset_changed_func = NULL;
+  priv->preset_changed_user_data = NULL;
 
   g_mutex_init(&priv->projectm_lock);
 }
@@ -595,7 +627,7 @@ gboolean gst_projectm_base_gl_start(GObject *plugin,
   if (!priv->handle) {
     // Create ProjectM instance
     priv->first_frame_received = FALSE;
-    GstBaseProjectMInitResult result = projectm_init(plugin, settings, vinfo);
+    GstBaseProjectMInitResult result = projectm_init(plugin, priv, settings, vinfo);
     if (!result.success) {
       GST_ERROR_OBJECT(plugin, "projectM could not be initialized");
       return FALSE;
@@ -665,6 +697,9 @@ void gst_projectm_base_fill_gl_memory_callback(GstBaseProjectMPrivate *priv,
 
   GST_PROJECTM_BASE_LOCK(priv);
 
+  /* store last pts for preset change notification timestamps */
+  priv->last_pts = pts;
+
   // get current gst sync time (pts) and set projectM time
   gdouble seconds_since_first_frame =
       get_seconds_since_first_frame_unlocked(priv, pts);
@@ -687,6 +722,13 @@ void gst_projectm_base_set_segment_pts_offset(GstBaseProjectMPrivate *priv,
   GST_PROJECTM_BASE_LOCK(priv);
   priv->first_frame_time = pts_offset;
   GST_PROJECTM_BASE_UNLOCK(priv);
+}
+
+void gst_projectm_base_set_preset_changed_callback(
+    GstBaseProjectMPrivate *priv, GstProjectMPresetChangedFunc func,
+    gpointer user_data) {
+  priv->preset_changed_func = func;
+  priv->preset_changed_user_data = user_data;
 }
 
 void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
@@ -836,4 +878,88 @@ void gst_projectm_base_install_properties(GObjectClass *gobject_class) {
           "\"false\". "
           "Default is \"auto\".",
           "auto", G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+}
+
+/**
+ * Escape a string for safe inclusion inside a JSON string value.
+ * Caller must g_free() the result.
+ */
+static gchar *json_escape_string(const char *str) {
+  GString *out = g_string_new(NULL);
+  for (const char *p = str; *p; p++) {
+    switch (*p) {
+    case '"':
+      g_string_append(out, "\\\"");
+      break;
+    case '\\':
+      g_string_append(out, "\\\\");
+      break;
+    case '\n':
+      g_string_append(out, "\\n");
+      break;
+    case '\r':
+      g_string_append(out, "\\r");
+      break;
+    case '\t':
+      g_string_append(out, "\\t");
+      break;
+    default:
+      if ((guchar)*p < 0x20) {
+        g_string_append_printf(out, "\\u%04x", (guchar)*p);
+      } else {
+        g_string_append_c(out, *p);
+      }
+      break;
+    }
+  }
+  return g_string_free(out, FALSE);
+}
+
+bool gst_projectm_base_push_preset_change(const char *preset_name, gboolean is_hard_cut, GstClockTime pts, GObject *plugin, GstPad *pad) {
+  if (!pad || !GST_PAD_IS_LINKED(pad)) {
+    return true;
+  }
+
+  /* Push stream-start + caps before the first data buffer */
+  if (!gst_pad_has_current_caps(pad)) {
+    gchar *stream_id = gst_pad_create_stream_id(
+      pad, GST_ELEMENT(plugin), "preset");
+    gst_pad_push_event(pad, gst_event_new_stream_start(stream_id));
+    g_free(stream_id);
+
+    GstCaps *caps = gst_caps_new_empty_simple("application/x-json");
+    gst_pad_push_event(pad, gst_event_new_caps(caps));
+    gst_caps_unref(caps);
+
+    GstSegment segment;
+    gst_segment_init(&segment, GST_FORMAT_TIME);
+    gst_pad_push_event(pad, gst_event_new_segment(&segment));
+  }
+
+  gchar *escaped = json_escape_string(preset_name);
+  gchar *json = g_strdup_printf(
+    "{\"preset\":\"%s\",\"is_hard_cut\":%s}", escaped,
+    is_hard_cut ? "true" : "false");
+  g_free(escaped);
+
+  gsize len = strlen(json);
+  GstBuffer *buf = gst_buffer_new_allocate(NULL, len, NULL);
+  gst_buffer_fill(buf, 0, json, len);
+  g_free(json);
+
+  GST_BUFFER_PTS(buf) = pts;
+  GST_BUFFER_DTS(buf) = pts;
+
+  GST_DEBUG_OBJECT(plugin,
+                   "Pushing preset change buffer on preset_src, pts=%"
+                   GST_TIME_FORMAT,
+                   GST_TIME_ARGS(pts));
+
+  GstFlowReturn ret = gst_pad_push(pad, buf);
+  if (ret != GST_FLOW_OK) {
+    GST_WARNING_OBJECT(plugin,
+                       "Failed to push preset change buffer: %s",
+                       gst_flow_get_name(ret));
+  }
+  return false;
 }
